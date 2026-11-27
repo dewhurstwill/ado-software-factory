@@ -36,12 +36,24 @@ Verbs                                   stdout
   ticket graph                          [issue node, ...] for every open issue (labels and
                                         comments nested as {nodes: [...]})
   board <verb> ...                      reserved for super-board-card.sh's verbs
+Azure DevOps only (super-board-forge-ado-pr.py), new verbs; the GitHub backend leaves them unimplemented (69):
+  pr create --base B --head H --title T --body-file F [--draft] [--label L]... [--closes <ticket>]...
+                                        URL, then the number on the last line
+  pr ready <N>                          publish a draft
+  pr comment <N> --body-file F          "<threadId>.<commentId>"
+  pr comments <N>                       [[{id,body,user,created_at,updated_at}]] (no system comments)
+  pr comment-edit <N> <threadId>.<commentId> --body-file F
+  pr links <N>                          {closes: [work item ids]}
+On Azure DevOps the shared pr verbs behave as follows: metadata and diff come from local git (the service has
+no diff); set-body moves the history, then visual, block into an overflow thread past 4,000 characters and
+body puts it back (exit 65 if still too long); merge pins the head, completes, then POLLS (exit 6 head moved,
+5 conflicts, 7 branch policy, 65 other refusal, 69 outcome unknown). Never trust lastMergeCommit before status is completed. See providers.md.
 Azure DevOps tracker verbs (super-board-forge-ado.py; shapes in providers.md): board ids|items|
 status|item-id|move|ensure [--check]; ticket view|list|graph|history|create|edit|close|comment|
 comments|comment-edit|claim|release [--force]; whoami; quota. Tags: `add` merges, `replace` sets;
 claims are per-holder tags `sb:claimed-<6hex>` verified after the add (see providers.md). The GitHub backend leaves these unimplemented (69).
 
-Exit codes: 0 ok · 3 not found (card/column) · 4 already claimed · 64 usage, or a malformed read (the read helper's) · 66 config
+Exit codes: 0 ok · 3 not found (card/column/pull request) · 4 already claimed · 64 usage, or a malformed read (the read helper's) · 66 config
 unreadable or unknown provider · 65 refused (board ensure) · 69 provider or verb unavailable · 79 required
 reads halted (the shared halt file). Other codes come from the write's own `gh`.
 
@@ -66,6 +78,9 @@ _spec.loader.exec_module(github_read)
 _spec = importlib.util.spec_from_file_location('forge_ado', HERE / 'super-board-forge-ado.py')
 forge_ado = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(forge_ado)
+_spec = importlib.util.spec_from_file_location('forge_ado_pr', HERE / 'super-board-forge-ado-pr.py')
+forge_ado_pr = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(forge_ado_pr)
 
 EXIT_USAGE, EXIT_CONFIG, EXIT_UNAVAILABLE, EXIT_HALTED = 64, 66, 69, 79
 
@@ -138,6 +153,12 @@ class Backend:
     def pr_set_body(self, argv): self.unavailable('pr set-body')
     def pr_merge(self, argv): self.unavailable('pr merge')
     def pr_list(self, argv): self.unavailable('pr list')
+    def pr_create(self, argv): self.unavailable('pr create')
+    def pr_ready(self, argv): self.unavailable('pr ready')
+    def pr_comment(self, argv): self.unavailable('pr comment')
+    def pr_comments(self, argv): self.unavailable('pr comments')
+    def pr_comment_edit(self, argv): self.unavailable('pr comment-edit')
+    def pr_links(self, argv): self.unavailable('pr links')
     def ticket_view(self, argv): self.unavailable('ticket view')
     def ticket_list(self, argv): self.unavailable('ticket list')
     def ticket_graph(self, argv): self.unavailable('ticket graph')
@@ -155,8 +176,8 @@ class Backend:
     def board(self, argv): self.unavailable('board ' + (argv[0] if argv else '<verb>'))
 
 
-class AzureDevOpsBackend(forge_ado.AdoVerbs, Backend):
-    """Tracker verbs live in super-board-forge-ado.py; the pr verbs stay unavailable (slice 3)."""
+class AzureDevOpsBackend(forge_ado_pr.AdoPrVerbs, forge_ado.AdoVerbs, Backend):
+    """Tracker verbs live in super-board-forge-ado.py, pull-request verbs in super-board-forge-ado-pr.py."""
     name = 'azure-devops'
 
 
@@ -275,7 +296,9 @@ class GitHubBackend(Backend):
         sys.stdout.flush()
         rc = subprocess.run(cmd).returncode
         if rc:
-            raise ForgeError('', rc)
+            # 5, 6, 7 and 65 are the gate's own "definite refusal" codes (Azure DevOps `pr merge`);
+            # a `gh` failure is ambiguous, so it must never look like one of them.
+            raise ForgeError('', 1 if rc in (5, 6, 7, 65) else rc)
 
     def pr_list(self, argv):
         p = parser('pr list --state open|merged --limit N')
@@ -328,6 +351,12 @@ DISPATCH = {
     ('pr', 'set-body'): 'pr_set_body',
     ('pr', 'merge'): 'pr_merge',
     ('pr', 'list'): 'pr_list',
+    ('pr', 'create'): 'pr_create',
+    ('pr', 'ready'): 'pr_ready',
+    ('pr', 'comment'): 'pr_comment',
+    ('pr', 'comments'): 'pr_comments',
+    ('pr', 'comment-edit'): 'pr_comment_edit',
+    ('pr', 'links'): 'pr_links',
     ('ticket', 'view'): 'ticket_view',
     ('ticket', 'list'): 'ticket_list',
     ('ticket', 'graph'): 'ticket_graph',
@@ -344,6 +373,7 @@ DISPATCH = {
     ('quota',): 'quota_verb',
 }
 forge_ado.bind(sys.modules[__name__])
+forge_ado_pr.bind(sys.modules[__name__], forge_ado)
 LABEL = {'name': 'github-read'}  # prefix of halt/read messages; the ADO backend says azure-devops
 
 

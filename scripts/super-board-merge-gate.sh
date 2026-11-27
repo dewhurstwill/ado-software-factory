@@ -143,6 +143,9 @@ fi
 
 FORGE=(python3 "$HERE/super-board-forge.py" --config "$CONFIG")
 CONFIG_JSON=$(cat "$CONFIG")
+# Only wording and the approval lookup depend on the provider; every other call goes through the forge.
+PROVIDER=$(echo "$CONFIG_JSON" | jq -r '.provider // "github"' | tr -d '\r')
+case "$PROVIDER" in azure-devops) FORGE_NAME="Azure DevOps" ;; *) FORGE_NAME="GitHub" ;; esac
 printf '%s\n' "$CONFIG_JSON" | python3 "$HERE/super-board-verification-ready.py" --config -
 BASE=$(echo "$CONFIG_JSON" | jq -r '.base_branch // "main"')
 REPO=$("${FORGE[@]}" repo --explicit)
@@ -200,7 +203,7 @@ say "lock taken; verifying against ${BASE} as it is now"
 # Done in a throwaway worktree so the branch under test is never mutated: the
 # gate proves a merge, it does not perform one locally and it never pushes.
 SCRATCH=$(mktemp -d)
-cleanup() { git -C "$REPO_PATH" worktree remove --force "$SCRATCH" 2>/dev/null || true; rm -rf "$SCRATCH" "${META:-}" "${DIFF:-}"; release; }
+cleanup() { git -C "$REPO_PATH" worktree remove --force "$SCRATCH" 2>/dev/null || true; rm -rf "$SCRATCH" "${META:-}" "${DIFF:-}" "${MERGE_OUT:-}"; release; }
 trap cleanup EXIT
 
 # ---- the head guard --------------------------------------------------------
@@ -209,7 +212,7 @@ trap cleanup EXIT
 pr_head() { "${FORGE[@]}" pr head "$PR"; }
 HEAD=$(pr_head) || exit $?
 read -r HEAD_REF HEAD_SHA <<<"$HEAD"
-[ -n "${HEAD_SHA:-}" ] || { say "could not read the PR head from GitHub"; exit 1; }
+[ -n "${HEAD_SHA:-}" ] || { say "could not read the PR head from ${FORGE_NAME}"; exit 1; }
 pr_state() { "${FORGE[@]}" pr state "$PR"; }
 STATE=$(pr_state) || exit $?
 if [ "$(echo "$STATE" | jq -r .state)" = MERGED ]; then
@@ -244,13 +247,23 @@ PLAN=$(python3 "$HERE/super-board-merge-policy.py" --config "$CONFIG" --meta "$M
 # The label is display-only. A request posted before `done` pins the exact head
 # and policy/commands. Re-read trusted approval evidence; never mint it here.
 APPROVED=false
+# Human approval evidence is read by super-board-approval.py, which only knows GitHub. On another
+# provider it cannot be verified, so it fails safe: never approved, a human merges.
 approval_check() {
-  APPROVAL=$(python3 "$HERE/super-board-approval.py" --repo "$REPO" --pr "$PR" \
-    --head "$HEAD_SHA" --plan "$PLAN") || APPROVAL='{"approved":false}'
+  if [ "$PROVIDER" = github ]; then
+    APPROVAL=$(python3 "$HERE/super-board-approval.py" --repo "$REPO" --pr "$PR" \
+      --head "$HEAD_SHA" --plan "$PLAN") || APPROVAL='{"approved":false}'
+  else
+    APPROVAL='{"approved":false}'
+  fi
   "${FORGE[@]}" check || exit $?
   APPROVED=$(echo "$APPROVAL" | jq -r '.approved // false')
 }
 approval_request() {
+  if [ "$PROVIDER" != github ]; then
+    say "approval requests are not available on ${FORGE_NAME} yet; a human merges PR #${PR} by hand"
+    return 0
+  fi
   python3 "$HERE/super-board-approval.py" --request --repo "$REPO" --pr "$PR" \
     --head "$HEAD_SHA" --plan "$PLAN"
 }
@@ -342,12 +355,16 @@ if [ "$DRY" -eq 1 ]; then
   exit 0
 fi
 
-# --match-head-commit makes GitHub refuse if anything was pushed after HEAD_SHA,
+# --match-head makes the forge refuse if anything was pushed after HEAD_SHA (GitHub: --match-head-commit;
+# Azure DevOps: the pinned lastMergeSourceCommit, TF401192),
 # including during the verification run above.
 "${FORGE[@]}" check
-if "${FORGE[@]}" pr merge "$PR" --squash --delete-branch \
+MERGE_OUT=$(mktemp); MERGE_RC=0
+"${FORGE[@]}" pr merge "$PR" --squash --delete-branch \
      ${SUBJECT:+--subject "$SUBJECT"} ${MSG_FILE:+--body-file "$MSG_FILE"} \
-     --match-head "$HEAD_SHA" 2>&1 | tail -3 >&2; then
+     --match-head "$HEAD_SHA" >"$MERGE_OUT" 2>&1 || MERGE_RC=$?
+grep -v '^human-gate:' "$MERGE_OUT" | tail -3 >&2 || true
+if [ "$MERGE_RC" -eq 0 ]; then
   say "merged ${HEAD_SHA}"
   # Post-merge tidy-up: drop worktrees and local branches the merge just made
   # redundant. Optional (only when the cleanup-wt hook is installed), local-only, and it
@@ -357,9 +374,21 @@ if "${FORGE[@]}" pr merge "$PR" --squash --delete-branch \
   fi
   exit 0
 fi
+# A definite refusal (nothing merged) has its own code and is not an unconfirmed merge: no halt.
+case "$MERGE_RC" in
+  5) say "the base does not merge in cleanly (${FORGE_NAME} reports conflicts)"
+     say "this is a rebase pass for the Builder lane, not a Blocked card"
+     exit 5 ;;
+  7) grep '^human-gate:' "$MERGE_OUT" || echo "human-gate: policy — ${FORGE_NAME} branch policy blocks completion"
+     approval_request
+     say "${FORGE_NAME} branch policy blocks the merge — a human merges this one"
+     exit 7 ;;
+  65) say "${FORGE_NAME} refused the merge; nothing was merged (see above)"
+      exit 1 ;;
+esac
 STATE=$(pr_state) || exit $?
 if [ "$(echo "$STATE" | jq -r .state)" = MERGED ]; then
-  say "merge response was lost; GitHub confirms the merge commit"
+  say "merge response was lost; ${FORGE_NAME} confirms the merge commit"
   exit 0
 fi
 NOW_SHA=$(echo "$STATE" | jq -r .headRefOid)
@@ -368,4 +397,4 @@ if [ "$NOW_SHA" != "$HEAD_SHA" ]; then
   say "the review evidence is void — send the card back to Review"
   exit 6
 fi
-"${FORGE[@]}" halt "Merge response failed and GitHub has not confirmed a merge; reconcile PR #${PR} before restarting. No merge was retried."
+"${FORGE[@]}" halt "Merge response failed and ${FORGE_NAME} has not confirmed a merge; reconcile PR #${PR} before restarting. No merge was retried."

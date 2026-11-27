@@ -744,10 +744,9 @@ class TransportTests(AdoCase):
         del self.config_value['ado']
         self.assertEqual(self.forge('board', 'ids').returncode, 66)
 
-    def test_pr_verbs_are_still_unavailable(self):
-        r = self.forge('pr', 'head', '1')
-        self.assertEqual(r.returncode, 69)
-        self.assertIn('azure-devops provider: pr head is not implemented yet', r.stderr)
+    def test_pr_verbs_are_served_here(self):
+        # the pull-request verbs are tested in test_forge_ado_pr.py; an unknown PR is "not found"
+        self.assertEqual(self.forge('pr', 'head', '1').returncode, 3)
 
 
 class AuthTests(AdoCase):

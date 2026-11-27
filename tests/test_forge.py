@@ -82,16 +82,17 @@ sys.exit(int(os.environ.get('FORGE_RC', '0')))
         writer.join()
         self.assertEqual(r.stdout, 'azure-devops\n')
 
-    def test_azure_devops_pr_verbs_are_not_implemented(self):
-        # The tracker verbs (ticket, board, check, repo, ...) are tested in test_forge_ado.py.
-        cfg = self.cfg(provider='azure-devops')
-        for verb in (['pr', 'head', '1'], ['pr', 'list', '--state', 'open', '--limit', '5'],
-                     ['pr', 'merge', '1', '--squash', '--delete-branch', '--match-head', 'a' * 40]):
-            r = self.run_forge(*verb, cfg=cfg)
+    def test_github_leaves_the_azure_devops_only_pr_verbs_unimplemented(self):
+        # The Azure DevOps pr verbs are tested in test_forge_ado_pr.py. Verbs only that provider has
+        # stay "not implemented" on GitHub and never reach `gh`.
+        for verb in (['pr', 'create', '--base', 'main', '--head', 'f', '--title', 't', '--body-file', 'x'],
+                     ['pr', 'ready', '1'], ['pr', 'comment', '1', '--body-file', 'x'], ['pr', 'comments', '1'],
+                     ['pr', 'comment-edit', '1', '1.1', '--body-file', 'x'], ['pr', 'links', '1']):
+            r = self.run_forge(*verb, cfg=self.cfg(provider='github'))
             self.assertEqual(r.returncode, 69, (verb, r.stderr))
-            self.assertIn('azure-devops provider: ', r.stderr)
+            self.assertIn('github provider: ', r.stderr)
             self.assertIn('is not implemented yet', r.stderr)
-        self.assertEqual(self.calls(), [], 'no gh call for another provider')
+        self.assertEqual(self.calls(), [], 'no gh call for an unimplemented verb')
 
     def test_unknown_provider_exits_66(self):
         r = self.run_forge('provider', cfg=self.cfg(provider='gitlab'))
@@ -199,6 +200,12 @@ sys.exit(int(os.environ.get('FORGE_RC', '0')))
         self.assertEqual(r.returncode, 3)
         self.assertEqual(len(self.calls()), 1)
         self.assertFalse(self.halt.exists(), 'a failed write does not halt by itself')
+
+    def test_gh_merge_failure_never_looks_like_a_definite_refusal(self):
+        # 5/6/7/65 are the merge gate's refusal codes (Azure DevOps); a gh failure is ambiguous.
+        for rc, want in ((1, 1), (2, 2), (4, 4), (5, 1), (6, 1), (7, 1), (65, 1)):
+            r = self.run_forge('pr', 'merge', '7', '--squash', '--delete-branch', '--match-head', HEAD, rc=rc)
+            self.assertEqual(r.returncode, want, rc)
 
     def test_pr_merge_argv_and_status(self):
         r = self.run_forge('--repo', 'o/n', 'pr', 'merge', '7', '--squash', '--delete-branch', '--subject', 'S s',

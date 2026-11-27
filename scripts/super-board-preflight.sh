@@ -42,7 +42,9 @@
 #             "evidence": ["#31 merged: Resolves #14"], "blockedBy": [31],
 #             "conflictWith": [52], "candidates": [{"ref":"#40","kind":"open-pr","sim":0.4,"title":"…"}] } }
 #
-# Exit 0 ok · 64 usage · 79 required GitHub evidence unavailable (pause the run;
+# --repo is the GitHub slug; on azure-devops the config (SB_CONFIG) names the repository and it is ignored.
+#
+# Exit 0 ok · 64 usage · 79 required forge evidence unavailable (pause the run;
 # a blind pre-flight never says proceed).
 set -euo pipefail
 # Fixed read commands: a malformed payload is GitHub's, so it halts (#32).
@@ -63,13 +65,15 @@ done
 echo "$ISSUES" | grep -Eq '^[0-9]+(,[0-9]+)*$' || { echo "--issues must be numbers: $ISSUES" >&2; exit 64; }
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-if [ -f "$HERE/super-board-gh-guard.sh" ]; then
+FORGE=(python3 "$HERE/super-board-forge.py" --repo "$REPO")
+# The provider comes from $SB_CONFIG (as for every forge call). The quota guard reads GitHub's
+# rate limit through `gh`, so it only runs there; Azure DevOps has no up-front quota endpoint.
+PROVIDER=$("${FORGE[@]}" provider | tr -d '\r') || exit $?
+if [ "$PROVIDER" = github ] && [ -f "$HERE/super-board-gh-guard.sh" ]; then
   # shellcheck source=/dev/null
   . "$HERE/super-board-gh-guard.sh"
   sb_gh_guard_check 200 || exit $?
 fi
-
-FORGE=(python3 "$HERE/super-board-forge.py" --repo "$REPO")
 MERGED=$("${FORGE[@]}" pr list --state merged --limit 100) || exit $?
 OPEN=$("${FORGE[@]}" pr list --state open --limit 100) || exit $?
 CLOSED=$("${FORGE[@]}" ticket list --state closed --limit 100) || exit $?

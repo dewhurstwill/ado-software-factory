@@ -23,7 +23,7 @@
 # Same content twice is a no-op ("unchanged"), so a retried lane exit is safe.
 #
 # Exits: 0 ok (stdout: updated | unchanged | the body on --dry-run)
-#        6 PR head moved · 64 usage · 66 unreadable file · 70 gh failure
+#        6 PR head moved · 64 usage · 65 body too long for the provider (nothing written) · 66 unreadable file · 70 gh failure
 set -uo pipefail
 
 BLOCKS="redcheck status problem solution ac history visual risk"
@@ -160,5 +160,10 @@ if [ "$DRY" -eq 1 ]; then cat "$NEW_TMP"; exit 0; fi
 # $(…) drops trailing newlines, which GitHub does not keep either.
 if [ "$(cat "$OLD_TMP")" = "$(cat "$NEW_TMP")" ]; then echo unchanged; exit 0; fi
 "${FORGE[@]}" check || exit $?
-"${FORGE[@]}" pr set-body "$PR" --body-file "$NEW_TMP" >/dev/null 2>&1 || { "${FORGE[@]}" halt "PR body update outcome unknown for #$PR; read the body before retrying"; exit 79; }
+SET_ERR=$("${FORGE[@]}" pr set-body "$PR" --body-file "$NEW_TMP" 2>&1 >/dev/null); SET_RC=$?
+if [ "$SET_RC" -eq 65 ]; then  # refused before any write (Azure DevOps: body over its 4,000-character cap): nothing to reconcile
+  echo "pr-body: $SET_ERR" >&2; exit 65
+elif [ "$SET_RC" -ne 0 ]; then
+  "${FORGE[@]}" halt "PR body update outcome unknown for #$PR; read the body before retrying"; exit 79
+fi
 echo updated

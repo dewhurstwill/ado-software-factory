@@ -1,7 +1,7 @@
 """A local fake Azure DevOps Services (loopback, threaded) for the ADO backend tests.
 
 Holds one team board, work items and comments in memory, seeded from the sanitized
-captures beside it, and records every request. Only the routes the forge calls exist.
+captures beside it, and records every request. Only the routes the forge calls exist (pull requests: fake_ado_pr.py).
 Behaviour mirrors what was observed against a real org: the column field is a per-board
 WEF_* name, the server derives System.State from the column's mapping, writing
 System.BoardColumn is refused, an unknown column is TF401320, a failed /rev test is
@@ -20,7 +20,9 @@ from socketserver import ThreadingMixIn
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
+sys.path.insert(0, str(HERE))
 from runtime_http_server import LoopbackHTTPServer  # noqa: E402
+from fake_ado_pr import PrStore  # noqa: E402
 
 
 class ThreadedServer(ThreadingMixIn, LoopbackHTTPServer):
@@ -57,6 +59,7 @@ class Fake:
         for c in self.columns:
             if self.bugs == 'asTasks':
                 c['stateMappings'].pop('Bug', None)
+        self.pulls = PrStore(USER)  # pull requests: fake_ado_pr.py
         self.items = {}
         self.comments = {}
         self.next_id = 2
@@ -172,6 +175,9 @@ class Handler(BaseHTTPRequestHandler):
         if not auth or (fake.token_ok and auth != fake.token_ok):
             return 401, {}, {'message': 'TF400813: unauthorized'}
         p, m, q = req['path'], req['method'], req['query']
+        pulled = fake.pulls.route(req)
+        if pulled:
+            return pulled
         if p == '/_apis/connectionData':
             return 200, {}, {'authenticatedUser': {
                 'id': USER['id'], 'providerDisplayName': 'Example User',

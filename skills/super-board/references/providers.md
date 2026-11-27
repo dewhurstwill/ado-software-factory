@@ -13,8 +13,9 @@ do not know which provider answered.
 - The config is read once; it may be a FIFO. A caller that already consumed its config
   hands the forge a fresh copy (`--config <(printf '%s\n' "$CONFIG_JSON")`).
 - Scripts pass `--config` to the forge whenever they have one.
-- `azure-devops` serves the tracker verbs (below). Its pull-request verbs (`pr ...`) still exit 69
-  (`azure-devops provider: <verb> is not implemented yet`) until that slice lands.
+- `azure-devops` serves the tracker verbs and the pull-request verbs (below). A verb a backend does not
+  have exits 69 (`<provider> provider: <verb> is not implemented yet`): the Azure DevOps-only `pr create|ready|
+  comment|comments|comment-edit|links` on GitHub.
 
 ## Repo
 
@@ -30,9 +31,11 @@ origin fallback (possibly empty); `repo` alone falls back to origin.
 |---|---|
 | 0 | ok |
 | 64 | usage error, or a malformed read (the read helper's: valid form is quoted on stderr; the run continues). `SB_GITHUB_READ_STRICT=1` turns a malformed read into a halt (79) |
-| 3 | Azure DevOps: work item not on the board, or column not on the board |
+| 3 | Azure DevOps: work item not on the board, column not on the board, or pull request not found; `pr` via the gate: the PR is closed (abandoned) |
 | 4 | `ticket claim`: already claimed (never steals) |
-| 65 | `board ensure` refused rather than guess (a non-empty extra column would be deleted) |
+| 6 | Azure DevOps `pr merge`: the head moved (TF401192); nothing merged |
+| 5, 7 | Azure DevOps `pr merge` only: 5 conflicts, 7 branch policy rejects completion (`human-gate:` line on stdout) |
+| 65 | refused rather than guess or write: `board ensure` (a non-empty extra column would be deleted); Azure DevOps `pr set-body`/`pr create` (body over 4,000 characters after the overflow) and `pr merge` (draft, not active, mergeStatus conflicts / rejectedByPolicy / failure) |
 | 66 | config unreadable, or unknown `provider` |
 | 69 | provider or verb unavailable; Azure DevOps: no credentials, or a write failed |
 | 79 | required reads halted: the shared halt file exists. Preserve work, stop dispatch, restart explicitly |
@@ -74,7 +77,7 @@ full 40-hex sha; `files` entries carry `path`; `labels` entries carry `name`.
 ## Azure DevOps tracker backend
 
 Code: `super-board-forge-ado.py` (mixed into the forge's `AzureDevOpsBackend`). stdlib `urllib`
-only. Tracker only: ticket, board, comment and claim verbs. No `pr` verbs yet.
+only. Tracker verbs: ticket, board, comment and claim. The pull-request verbs are in `super-board-forge-ado-pr.py` (see "Azure DevOps pull-request backend").
 
 ### Config
 
@@ -187,7 +190,86 @@ re-read and retry, max 3. Halt messages say Azure DevOps.
 - `allowedMappings.InProgress` lists states alphabetically, not in workflow order; use the states endpoint.
 - WIQL returns ids only and truncates at 20,000.
 
+## Azure DevOps pull-request backend
+
+Code: `super-board-forge-ado-pr.py`. Repository = `ado.repository` (default: the project). Resource
+`{org}/{project}/_apis/git/repositories/{repo}/pullrequests/{id}`, JSON bodies (`application/json`),
+transport, auth, halting and the 409/412 rules as above. PR web URL: `{organization}/{project}/_git/{repository}/pullrequest/{id}`.
+Config `repo.path` is the local clone used for `pr metadata` / `pr diff`.
+Labels come from `GET …/pullrequests/{id}/labels` (`{count, value:[{id,name,active}]}`); the single-PR GET has no `labels` key
+and is not trusted for them. A failed labels read is a failed required read (halt), never "no labels": merge policy matches on them.
+
+| Verb | Stdout | Exit |
+|---|---|---|
+| `pr head <N>` | `<branch> <40-hex>`: `sourceRefName` without `refs/heads/`, `lastMergeSourceCommit` | 3 not found |
+| `pr state <N>` | `{state, headRefOid, mergeCommit}`; `active`=OPEN, `completed`=MERGED, `abandoned`=CLOSED; `mergeCommit:{oid}` only when completed, else null | 69 completed without a merge commit |
+| `pr metadata <N>` | `{labels, files:[{path,additions,deletions}], additions, deletions, changedFiles, body}` from local git; `body` is the logical body | 69 fetch/head mismatch/validation |
+| `pr diff <N> --meta F` | unified diff from local git, validated against `F` | 64 no `--meta`; 69 |
+| `pr body <N>` | `{headRefOid, body}`: the LOGICAL body (overflow put back) | |
+| `pr set-body <N> --body-file F` | nothing | 65 still over 4,000 after the overflow; nothing written |
+| `pr merge <N> --squash --delete-branch [--subject S] [--body-file F] --match-head <sha>` | `merged #N as <sha>`; on 7 also `human-gate: policy — Azure DevOps branch policy blocks completion: <mergeFailureMessage or "see the PR's policy list">` | 6 head moved (TF401192); 5 `mergeStatus` conflicts; 7 `rejectedByPolicy`; 65 draft, not active, `mergeStatus` failure or other definite refusal; 69 only when the outcome is unknown (poll timeout, transport failure after the PATCH) |
+| `pr list --state open\|merged --limit N` | prs-open / prs-merged shapes (open: + `headRefName`, `files:[{path}]` without the leading `/`) | |
+| `pr create --base B --head H --title T --body-file F [--draft] [--label L]... [--closes <ticket>]...` | URL, then the number (last line) | 65 body too long, nothing created |
+| `pr ready <N>` | `ready #N` | |
+| `pr comment <N> --body-file F` | `<threadId>.<commentId>` | |
+| `pr comments <N>` | `[[{id:"<thread>.<comment>", body, user:{login,type:"User"}, created_at, updated_at}]]`, oldest first | |
+| `pr comment-edit <N> <thread>.<comment> --body-file F` | the id | 64 bad id |
+| `pr links <N>` | `{closes:[<work item ids>]}` from the PR's linked work items | |
+
+`pr list` `body` is the raw description: a moved history block shows as its stub line. `pr comments` leaves out
+`system` comments, deleted ones and the overflow thread. `$top` is passed as `--limit`.
+
+Observed live: create, head/state/links, metadata/diff, overflow round-trip, comment edit (HTML markers survive), list open/merged,
+ready, the service reports a new source head about 2s after a push, the full gate (stale head exit 6, squash in ~3s, branch
+deleted, re-run is a no-op), `Closes #N` closing the work item even with `transitionWorkItems:false`; `lastMergeSourceCommit`
+stays set on a completed PR.
+
+### Merge: pinned commit, then poll
+
+The completion `PATCH` is `{status:"completed", lastMergeSourceCommit:{commitId:<match-head>}, completionOptions:
+{mergeStrategy:"squash", deleteSourceBranch:true, transitionWorkItems:false, mergeCommitMessage:"<subject>\n\n<body>"}}`.
+`lastMergeSourceCommit` is the `--match-head-commit` equivalent: missing = 400, not the current source head = 409
+`TF401192` (exit 6, nothing merged). The service answers 200 and STILL says `active`/`queued`; the verb then GETs every
+`SB_ADO_MERGE_POLL_INTERVAL` seconds (2) for up to `SB_ADO_MERGE_POLL_TIMEOUT` (90) until `status == completed`.
+`mergeStatus` conflicts / rejectedByPolicy / failure (checked before the completion and while polling) are DEFINITE
+refusals with their own codes (5, 7, 65; 7 also prints the `human-gate:` line); a draft exits 65 telling the caller to run
+`pr ready` first. Only a timeout or a transport failure after the PATCH exits 69: the gate re-reads the state and halts
+for reconciliation. The gate maps 5 to its exit 5 (rebase pass), 7 to its exit 7 (human-gate line, approval request, no halt),
+65 to exit 1 with no halt; 6 and everything else take the re-read path. The GitHub backend normalises a `gh pr merge`
+exit of 5, 6, 7 or 65 to 1, so none of those codes can come from GitHub. The completion is never re-sent. Without `--subject` the PR title is the squash subject (when a body
+is given); with neither the service writes its own message. A `Closes #<work item id>` line in the squash message makes
+the service close that work item and move its card to Done (repo setting, on by default): the factory's later move to Done
+is then a no-op.
+
+**Trial-commit trap:** `lastMergeCommit` is already set while the PR is active (the service's trial merge). It is the real
+merge commit only once `status` is `completed`; `pr state` reports `mergeCommit` only then.
+
+### No server-side diff
+
+The service has no added/deleted line counts and no unified diff. `pr metadata` and `pr diff` run in `repo.path`:
+`git fetch origin <source> <target>` (the clone's own credentials), the fetched source tip must equal
+`lastMergeSourceCommit` (else one re-read, then exit 69: a push is still being processed), `merge-base(target, head)`,
+then BOTH the `--numstat` and the diff come from that one `base..head` pair with `--no-renames` (a rename is a delete
+plus an add; binary files count 0). The forge runs the read helper's `metadata` and `diff` validators on its own output
+before printing. A completed PR's source branch is deleted, so these verbs serve open PRs only.
+
+### The 4,000-character description cap
+
+A description over 4,000 characters (UTF-16 units) is a 400. `pr set-body` and `pr create` keep callers unaware:
+if the body fits it is the description; if not, the whole `<!-- sb:history -->` block, then (only if still too long)
+the `<!-- sb:visual -->` block, moves into ONE PR thread whose first comment starts with `<!-- sb:overflow -->` (created
+once, then edited in place). In the description the block keeps its own markers around
+`_Moved to the first comment thread (Azure DevOps limits a description to 4,000 characters)._`. When nothing overflows any
+more the thread's comment is reset to the marker plus a one-line note, never deleted. `pr body` / `pr metadata` read the
+thread (only when the description carries the stub) and substitute the blocks back, so `super-board-pr-body.sh` always sees and
+writes one complete body. Still over 4,000 after both moves: exit 65 naming the limit and the size, nothing written
+(`super-board-pr-body.sh` passes the 65 on and does not halt). The thread is written before the description, and reset after it.
+HTML comments (`<!-- sb:... -->`) survive in descriptions and thread comments (unlike work items).
+
 ## Not behind the forge yet
 
 `super-board-approval.py` (approval comments, closing-issue links), the card verbs in
 `super-board-card.sh`, and the filer, lane, run and status scripts still call `gh` directly.
+On Azure DevOps the merge gate does not call the approval script: approval is never verified, so a
+human-gated PR exits 7 and a `needs-you` one exits 8, waiting for a human to merge by hand.
+`super-board-preflight.sh` skips the GitHub quota guard on Azure DevOps.

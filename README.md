@@ -71,8 +71,9 @@ Azure DevOps support is being added in this fork and is not complete:
 |---|---|
 | Board and tickets: read, move, create, label, comment, claim, wave planning | Works, checked against a live organisation |
 | Board setup (`board ensure`: seven columns, bugs on the board) | Works, checked live |
-| Pull requests, merge gate, PR body | In progress |
-| Human approval of gated merges | Not yet |
+| Pull requests: open, comment, read the diff, rewrite PR body blocks | Works, checked live |
+| Merge gate: pinned to the reviewed commit, squash, branch policies respected | Works, checked live |
+| Approving a gated merge with a "done" comment | Not yet: a held PR is merged by a person in Azure DevOps |
 | Onboarding questions, status view, ticket filers, collectors, skill instructions | Still GitHub-only |
 
 To try it, install from this fork and add the block below to
@@ -98,6 +99,9 @@ curl -fsSL https://raw.githubusercontent.com/dewhurstwill/ado-software-factory/m
 The PAT needs **Work Items: Read & write** and **Code: Read & write**, and its owner must be a
 team administrator to set up the board columns. The Agile, Scrum and Basic processes are
 supported through the board's own column-to-state mapping; only Agile has been run live.
+An Azure DevOps PR description holds 4,000 characters, so a long PR body keeps its history and
+screenshots in the PR's first comment thread. A branch policy that needs a reviewer or a build is
+respected: the gate reports the PR as waiting for a person instead of merging.
 Verb contract, mapping and the service behaviour this relies on:
 [providers.md](skills/super-board/references/providers.md).
 
