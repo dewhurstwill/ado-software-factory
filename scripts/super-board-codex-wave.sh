@@ -6,7 +6,8 @@
 # (ROUTER_MODEL) grades each Ready card low/medium/high; the lane launcher maps
 # tier x grade to a model through its Codex.LADDERS table.
 set -euo pipefail
-exec python3 - "${BASH_SOURCE[0]}" "$@" <<'PY'
+. "$(dirname "${BASH_SOURCE[0]}")/super-board-compat.sh"  # Windows: jq/python3 shims; no-op elsewhere
+sb_exec_python - "${BASH_SOURCE[0]}" "$@" <<'PY'
 import argparse
 import importlib.util
 from concurrent.futures import ThreadPoolExecutor
@@ -32,6 +33,10 @@ if len(codex) != 1 or (codex[0].startswith('--codex=') and not codex[0].partitio
 args = parser.parse_args([arg for arg in raw if arg not in codex])
 output_path = Path(args.output).resolve() if args.output else None
 launcher = Path(sys.argv[1]).resolve().with_name('super-board-lane.sh')
+# Windows: codex.cmd / Git Bash resolution and process-tree kills (super-board-compat.py).
+_compat_spec = importlib.util.spec_from_file_location('sb_compat', launcher.with_name('super-board-compat.py'))
+compat = importlib.util.module_from_spec(_compat_spec)
+_compat_spec.loader.exec_module(compat)
 try:
     config_path = Path(args.config).resolve()
     config = json.loads(config_path.read_text())
@@ -106,18 +111,12 @@ def cancel(signum, frame):
     with mutex:
         processes = list(active)
         for process in processes:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+            compat.kill_group(process)
     # Process groups include the launcher, Codex, and shell descendants. Kill
     # lingering descendants too, even when their launcher already exited.
     time.sleep(2)
     for process in processes:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        compat.kill_group(process, hard=True)
 
 signal.signal(signal.SIGTERM, cancel)
 signal.signal(signal.SIGINT, cancel)
@@ -156,8 +155,8 @@ def grade(card):
             if halted.is_set():
                 return None, True
             try:
-                process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                           text=True, start_new_session=True)
+                process = subprocess.Popen(compat.argv_for(command), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                           text=True, **compat.group_kwargs())
             except OSError:
                 return None, False
             active.add(process)
@@ -203,18 +202,15 @@ def run_card(card):
             process = None
             lock = inflight / str(card['number'])
             try:
-                process = subprocess.Popen(['bash', str(launcher), '--backend', 'codex', '--config', str(config_path),
+                process = subprocess.Popen(compat.tool('bash') + [str(launcher), '--backend', 'codex', '--config', str(config_path),
                                             '--card', json.dumps(current), '--lane', lane, codex[0],
                                             '--tier', args.tier] + (['--complexity', complexity] if complexity else []),
-                                           stdout=subprocess.PIPE, text=True, start_new_session=True)
+                                           stdout=subprocess.PIPE, text=True, **compat.group_kwargs())
                 active.add(process)
                 lock.write_text(f'PID={process.pid}\nLANE={lane}\nSTARTED={time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}\n')
             except OSError as error:
                 if process is not None:
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+                    compat.kill_group(process, hard=True)
                     process.wait()
                     active.discard(process)
                 history.append(dict(lane=lane, status='failed', column=current['status'],

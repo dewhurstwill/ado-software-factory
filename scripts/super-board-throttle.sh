@@ -30,6 +30,7 @@
 # `from` 0 means unlimited; a hit on an unlimited config starts the ladder at 3.
 # Exit 0 whether or not it hit (read `hit`) · 64 usage · 66 config missing.
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/super-board-compat.sh"  # Windows: jq/python3 shims; no-op elsewhere
 
 CONFIG=""; RESULTS=""; RATE=""; DRY=0
 while [ $# -gt 0 ]; do

@@ -10,6 +10,8 @@
 # Not copied into target projects by install.sh: it is for this repo only.
 
 ROOT=$(git rev-parse --show-toplevel) || exit 0
+# Windows: a working python3 (super-board-compat.sh); no-op elsewhere.
+[ ! -f "$ROOT/scripts/super-board-compat.sh" ] || . "$ROOT/scripts/super-board-compat.sh"
 cd "$ROOT" || exit 0
 git diff --cached --name-only -- skills/ | grep -q . || exit 0
 

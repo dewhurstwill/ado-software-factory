@@ -37,6 +37,7 @@
 #       79 reads halted (super-board-github-read.py) · 3 issue not on this board /
 #       Status option missing.
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/super-board-compat.sh"  # Windows: jq/python3 shims; no-op elsewhere
 # Fixed read commands: a malformed payload is GitHub's, so it halts (#32).
 export SB_GITHUB_READ_STRICT=1
 
@@ -62,7 +63,7 @@ if [ -n "$CONFIG" ]; then
   CJ=$(cat "$CONFIG")
   # Another provider owns its own board verbs: hand over to the forge (config read once above).
   if [ "$(echo "$CJ" | jq -r '.provider // "github"')" = "azure-devops" ]; then
-    exec python3 "$HERE/super-board-forge.py" --config <(printf '%s\n' "$CJ") board "$VERB" "$@"
+    sb_exec_python "$HERE/super-board-forge.py" --config <(printf '%s\n' "$CJ") board "$VERB" "$@"
   fi
   [ -n "$OWNER" ]  || OWNER=$(echo "$CJ" | jq -r '.project.owner // ""')
   [ -n "$NUMBER" ] || NUMBER=$(echo "$CJ" | jq -r '.project.number // ""')

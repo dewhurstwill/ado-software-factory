@@ -98,7 +98,7 @@ def render(findings, since, date):
 
 
 def doc(args):
-    findings = json.loads(Path(args.findings).read_text())
+    findings = json.loads(Path(args.findings).read_text(encoding='utf-8'))
     if not isinstance(findings, list):
         print("collect-handoff: --findings must be a JSON array", file=sys.stderr)
         return 64
@@ -118,7 +118,7 @@ def doc(args):
         print(f"collect-handoff: dry run — would write {out}", file=sys.stderr)
         return 0
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(text)
+    out.write_text(text, encoding='utf-8')
     print(out)
     return 0
 

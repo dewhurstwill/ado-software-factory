@@ -20,6 +20,7 @@
 # Stdout, one line per key:   KEY present | KEY empty | KEY missing
 # Exit: 0 every key present · 1 at least one empty or missing · 64 usage
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/super-board-compat.sh"  # Windows: jq/python3 shims; no-op elsewhere
 
 FILE=""
 FILES=()

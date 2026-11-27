@@ -134,7 +134,7 @@ def protected_branches(project_dir):
     names = {"main", "master"}
     for p in glob.glob(os.path.join(project_dir, ".claude", "super-board", "configs", "*.json")):
         try:
-            base = json.load(open(p)).get("base_branch")
+            base = json.load(open(p, encoding="utf-8")).get("base_branch")
             if isinstance(base, str) and base:
                 names.add(base)
         except (OSError, ValueError, AttributeError):

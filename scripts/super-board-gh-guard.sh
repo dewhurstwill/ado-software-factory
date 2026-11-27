@@ -23,6 +23,9 @@
 # is `azure-devops remaining=<n>/<limit> cost=<total> throttled=<429s>`; workers append it as
 # `gh-quota-on-exit: <that text>` exactly as they append the GitHub one.
 #
+# Windows: jq/python3 shims (bash only: workers may source this file from zsh).
+if [ -n "${BASH_VERSION:-}" ]; then . "$(dirname "${BASH_SOURCE[0]}")/super-board-compat.sh"; fi
+
 # Constants
 SB_GH_GUARD_MIN_REMAINING_DEFAULT=200
 SB_GH_GUARD_REST_MIN_REMAINING=500

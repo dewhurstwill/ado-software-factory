@@ -4,6 +4,7 @@
 # arguments instead of reaching the network. Each case installs into a fresh
 # temp target and checks what landed.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")/.."
 PACK="$PWD"
 GET="$PACK/get.sh"

@@ -58,6 +58,7 @@
 # "nothing on this board clears it" — credentials, permissions, a product ruling.
 # The sweep must never free one of those; only a person can.
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/super-board-compat.sh"  # Windows: jq/python3 shims; no-op elsewhere
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO=""; LIMIT="200"; ONLY=""; FROM=""; CONFIG=""

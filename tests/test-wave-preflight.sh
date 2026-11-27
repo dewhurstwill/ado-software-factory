@@ -7,6 +7,7 @@
 # that says go. A hold, a sequence-behind, or a missing verdict ends the card's
 # chain for this wave and shows up in the summary — never silently dropped.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")"
 
 node - ../workflows/super-board-wave.js <<'JS'

@@ -2,6 +2,7 @@
 # Tests super-board-env-check.sh — key names in, present/empty/missing out, and
 # never a byte of any value on stdout or stderr.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")"
 EC="$PWD/../scripts/super-board-env-check.sh"
 fail() { echo "FAIL: $1" >&2; exit 1; }

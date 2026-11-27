@@ -55,11 +55,14 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Callable
 
-# Make box-drawing chars render on Windows consoles too.
-try:
-    sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
-except Exception:
-    pass
+# Windows: run tools by PATHEXT or through Git Bash, UTF-8 stdio (super-board-compat.py).
+import importlib.util as _ilu, os as _os
+_cspec = _ilu.spec_from_file_location('sb_compat', _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'super-board-compat.py'))
+compat = _ilu.module_from_spec(_cspec)
+_cspec.loader.exec_module(compat)
+
+# Make box-drawing chars render on Windows consoles too (UTF-8, \n line ends).
+compat.utf8_stdio()
 
 
 # ───────────────────────────── lane constants ─────────────────────────────
@@ -348,7 +351,7 @@ def resolve_config_slug(argv: list[str]) -> str:
         return argv[1]
     active = Path(".claude/super-board/active")
     if active.is_file():
-        return active.read_text().strip()
+        return active.read_text(encoding="utf-8").strip()
     cfgs = sorted(Path(".claude/super-board/configs").glob("*.json"))
     if len(cfgs) == 1:
         return cfgs[0].stem
@@ -359,7 +362,7 @@ def resolve_config_slug(argv: list[str]) -> str:
 def gh(*args: str, check: bool = True) -> str:
     """Run gh and return stdout. Exits 67 on failure when check=True."""
     try:
-        proc = subprocess.run(
+        proc = compat.run(
             ["gh", *args], capture_output=True, text=True, encoding="utf-8", check=False
         )
     except FileNotFoundError:
@@ -582,7 +585,7 @@ def main() -> int:
         print(f"config not found: {config_path}", file=sys.stderr)
         return 66
 
-    cfg = json.loads(config_path.read_text())
+    cfg = json.loads(config_path.read_text(encoding="utf-8"))
     provider = cfg.get("provider", "github")
     if provider not in ("github", "azure-devops"):
         print(f"unknown provider {provider!r} in config (expected github or azure-devops)", file=sys.stderr)
@@ -675,7 +678,7 @@ def main() -> int:
             reasons[n] = body[:4000]
 
     # ── parse manifest ──
-    manifest_text = manifest_path.read_text() if manifest_path.is_file() else ""
+    manifest_text = manifest_path.read_text(encoding="utf-8") if manifest_path.is_file() else ""
     now_epoch = int(time.time())
     state = parse_manifest(manifest_text, run_date)
     inflight = state["inflight"]

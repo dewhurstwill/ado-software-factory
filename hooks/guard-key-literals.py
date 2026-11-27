@@ -64,7 +64,7 @@ def visible_text(payload):
         if not path or path.endswith(TEMPLATE_FILES):
             return ""
         try:
-            with open(path, errors="replace") as fh:
+            with open(path, errors="replace", encoding="utf-8") as fh:
                 return fh.read()
         except OSError:
             return ""

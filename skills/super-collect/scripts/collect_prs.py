@@ -174,7 +174,7 @@ def main(argv=None):
     since = cc.since(a.since, cc.window_days(cfg))
     max_prs = a.max or int(cc.collect_block(cfg, "prs").get("max_prs", 200))
     try:
-        prs, truncated = list_prs(repo, since, max_prs)
+        prs, truncated = list_prs(repo, since, max_prs, run=cc.run)
     except RuntimeError as e:
         print(json.dumps({"source": "prs", "status": "unavailable", "error": str(e)}))
         return 2

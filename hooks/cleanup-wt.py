@@ -48,6 +48,33 @@ import subprocess
 import sys
 import time
 
+
+def _load_compat():
+    """super-board-compat.py from the installed bin/ (or the pack's scripts/), else None."""
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    for folder in ("bin", "scripts"):
+        path = os.path.join(os.path.dirname(here), folder, "super-board-compat.py")
+        if os.path.isfile(path):
+            spec = importlib.util.spec_from_file_location("sb_compat", path)
+            module = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(module)
+                return module
+            except Exception:  # a broken helper must not break the hook
+                return None
+    return None
+
+
+_COMPAT = _load_compat()
+
+
+def tool_argv(name):
+    """argv prefix for a tool. Windows: gh.cmd, or a shell-script gh, through compat."""
+    if _COMPAT is not None:
+        return _COMPAT.resolve(name) or [name]
+    return [name]
+
 KEEP, REMOVE, REVIEW = "KEEP", "REMOVE", "REVIEW"
 ALLOWED_DIR = os.path.join(".claude", "worktrees")
 FRESH_SECS = 24 * 3600
@@ -70,8 +97,8 @@ GIT_ENV.update(
 
 def git(cwd, *args, timeout=60):
     try:
-        r = subprocess.run(["git", "-C", cwd] + list(args), capture_output=True, text=True,
-                           env=GIT_ENV, timeout=timeout)
+        r = subprocess.run(tool_argv("git") + ["-C", cwd] + list(args), capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", env=GIT_ENV, timeout=timeout)
         return r.returncode, r.stdout.strip(), r.stderr.strip()
     except (subprocess.TimeoutExpired, OSError) as e:
         return 1, "", str(e)
@@ -83,7 +110,7 @@ def git_out(cwd, *args):
 
 
 def real(p):
-    return os.path.realpath(p) if os.path.exists(p) else p
+    return os.path.realpath(p) if os.path.exists(p) else os.path.normpath(p)  # C:/x and C:\x alike
 
 
 # ---- facts ------------------------------------------------------------------
@@ -281,7 +308,8 @@ def pull_requests(cwd):
 
     def gh(*args):
         try:
-            r = subprocess.run([exe] + list(args), cwd=cwd, capture_output=True, text=True, env=env, timeout=15)
+            r = subprocess.run(tool_argv(exe) + list(args), cwd=cwd, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", env=env, timeout=15)
             return json.loads(r.stdout or "[]") if r.returncode == 0 else None
         except (OSError, ValueError, subprocess.TimeoutExpired):
             return None
@@ -446,7 +474,7 @@ def now_iso():
 
 def write_tsv(path, log):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as fh:
+    with open(path, "w", encoding="utf-8") as fh:
         fh.write("when\tkind\tname\tsha\tpath\taction\treason\n")
         for r in log:
             fh.write("\t".join(str(r[k]) for k in ("when", "kind", "name", "sha", "path", "action", "reason")) + "\n")
@@ -567,10 +595,10 @@ def bases_moved(ctx, names):
     tips = " ".join(b["sha"] for b in base_refs(ctx["cwd"], names))
     if not os.path.exists(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as fh:
+        with open(path, "w", encoding="utf-8") as fh:
             fh.write(tips + "\n")
         return False, path, tips
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         return fh.read().strip() != tips, path, tips
 
 
@@ -619,7 +647,7 @@ def run(argv):
 
     if args.get("quiet"):
         if gate:
-            with open(gate[0], "w") as fh:
+            with open(gate[0], "w", encoding="utf-8") as fh:
                 fh.write(gate[1] + "\n")
         acted = [d for d in done if d.startswith(("removed", "deleted", "pruned"))]
         if acted:
@@ -642,6 +670,11 @@ def run(argv):
 
 def main():
     hook = "--auto" in sys.argv or "--post-merge" in sys.argv
+    for stream in (sys.stdout, sys.stderr):  # Windows pipes default to the ANSI code page
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace", newline="\n")
+        except (AttributeError, ValueError):
+            pass
     try:
         sys.exit(run(sys.argv[1:]))
     except Exception as e:  # a hook must never fail a session; by hand, say what broke

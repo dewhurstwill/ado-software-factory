@@ -5,6 +5,7 @@
 #
 #   bash tests/test-ui-refine-loop-setup.sh
 set -uo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SETUP="$REPO_ROOT/skills/ui-refine-loop/scripts/refine-setup.sh"

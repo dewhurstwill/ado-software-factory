@@ -7,6 +7,7 @@
 #   bash tests/test-file-refactor.sh
 
 set -uo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$REPO_ROOT/scripts/super-review-file-refactor.sh"

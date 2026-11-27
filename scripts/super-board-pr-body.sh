@@ -25,6 +25,7 @@
 # Exits: 0 ok (stdout: updated | unchanged | the body on --dry-run)
 #        6 PR head moved · 64 usage · 65 body too long for the provider (nothing written) · 66 unreadable file · 70 gh failure
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/super-board-compat.sh"  # Windows: jq/python3 shims; no-op elsewhere
 
 BLOCKS="redcheck status problem solution ac history visual risk"
 die() { echo "pr-body: $1" >&2; exit "$2"; }

@@ -16,6 +16,12 @@ import stat
 import subprocess
 import sys
 
+# Windows: run tools by PATHEXT or through Git Bash, UTF-8 stdio (super-board-compat.py).
+import importlib.util as _ilu, os as _os
+_cspec = _ilu.spec_from_file_location('sb_compat', _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'super-board-compat.py'))
+compat = _ilu.module_from_spec(_cspec)
+_cspec.loader.exec_module(compat)
+
 POLICY = 'skills/super-build/references/decision-policy.md'
 REGISTRY = {
     'build_rows': [(['bug'], ['mattpocock-skills:diagnosing-bugs', 'mattpocock-skills:tdd']),
@@ -203,7 +209,7 @@ def codex_disabled(config_path, root, home):
             elif not quote and char == '#':
                 return line[:index].strip()
         return line.strip()
-    for raw in config_path.read_text().splitlines():
+    for raw in config_path.read_text(encoding='utf-8').splitlines():
         line = uncomment(raw)
         if not line:
             continue
@@ -266,7 +272,7 @@ class Inventory:
             self.claude_plugins()
         else:
             # Codex discovery stops at this independent repository's root.
-            process = subprocess.run(['git', '-C', str(self.root), 'rev-parse', '--show-toplevel'],
+            process = compat.run(['git', '-C', str(self.root), 'rev-parse', '--show-toplevel'],
                                      text=True, capture_output=True)
             boundary = Path(process.stdout.strip()).resolve() if process.returncode == 0 else self.root
             scoped = [self.root]
@@ -301,7 +307,7 @@ class Inventory:
                     self.disabled.clear()
                     self.catalog_only = True
         if catalog:
-            data = json.loads(Path(catalog).read_text())
+            data = json.loads(Path(catalog).read_text(encoding='utf-8'))
             if not isinstance(data, dict) or data.get('host') != host or not isinstance(data.get('skills'), list):
                 raise ValueError('unsupported active skill catalog: expected host and skills array')
             for entry in data['skills']:
@@ -326,7 +332,7 @@ class Inventory:
         settings = {}
         for path in [self.home / '.claude/settings.json', self.root / '.claude/settings.json', self.root / '.claude/settings.local.json']:
             if path.exists():
-                data = json.loads(path.read_text())
+                data = json.loads(path.read_text(encoding='utf-8'))
                 if not isinstance(data, dict):
                     raise ValueError('unsupported Claude settings: expected an object')
                 enabled = data.get('enabledPlugins', {})
@@ -336,7 +342,7 @@ class Inventory:
         manifest = self.home / '.claude/plugins/installed_plugins.json'
         if not manifest.exists():
             return
-        data = json.loads(manifest.read_text())
+        data = json.loads(manifest.read_text(encoding='utf-8'))
         if not isinstance(data, dict):
             raise ValueError('unsupported Claude installed plugin metadata: expected an object')
         plugins = data.get('plugins')
@@ -496,7 +502,7 @@ def main(argv=None):
             worker_name(name)
         if args.profile and args.lane:
             raise ValueError('--profile setup checks the full union; --lane requires selected cards')
-        cards = json.loads(sys.stdin.read() if args.cards == '-' else Path(args.cards).read_text()) if args.cards else None
+        cards = json.loads(sys.stdin.read() if args.cards == '-' else Path(args.cards).read_text(encoding='utf-8')) if args.cards else None
         if cards is not None and not isinstance(cards, list):
             raise ValueError('cards must be an array')
         if args.hydrate and cards is not None:

@@ -4,6 +4,7 @@
 # Every case runs twice: through the super-board-codex-lane.sh shim and through
 # super-board-lane.sh --backend codex, with the same stubbed codex.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 KIT=$(cd "$(dirname "$0")/.." && pwd)
 if [ -z "${SB_LANE_ENTRY:-}" ]; then
   for entry in shim backend; do SB_LANE_ENTRY=$entry bash "$0" || { echo "FAIL: entry $entry" >&2; exit 1; }; done

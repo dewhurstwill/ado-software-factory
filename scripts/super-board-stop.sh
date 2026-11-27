@@ -36,6 +36,7 @@
 #   66 config not found
 
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/super-board-compat.sh"  # Windows: jq/python3 shims; no-op elsewhere
 
 # ───────────────────────────── args + paths ─────────────────────────────
 CONFIG_SLUG="${1:-}"
@@ -188,6 +189,35 @@ kill_pid() {
   fi
 }
 
+# The Codex wave marker holds the PID the wave's Python wrote. On Windows that is a
+# Windows PID, which bash's kill -0 (MSYS PIDs) cannot see, and ps has no -o: check,
+# identify and end it with Windows tools there (see super-board-run.sh, PID trap).
+wave_alive() {
+  if [ -n "${SB_WINDOWS:-}" ]; then
+    tasklist //FI "PID eq $1" //FO CSV //NH 2>/dev/null | grep -q "\"$1\""
+  else
+    kill -0 "$1" 2>/dev/null
+  fi
+}
+wave_args() {
+  if [ -n "${SB_WINDOWS:-}" ]; then
+    powershell.exe -NoProfile -NonInteractive -Command \
+      "(Get-CimInstance Win32_Process -Filter 'ProcessId=$1').CommandLine" 2>/dev/null
+  else
+    ps -p "$1" -o args= 2>/dev/null
+  fi
+}
+# Windows has no SIGTERM for another process: end the wave's whole tree (its lanes
+# included) at once, then wait for it to be gone.
+stop_wave() {
+  local pid="$1" grace="$2" waited=0
+  if [ -z "${SB_WINDOWS:-}" ]; then kill_pid "$pid" "codex-wave" "$grace"; return; fi
+  if ! wave_alive "$pid"; then log "  ⊘ codex-wave pid=${pid} already dead"; return 0; fi
+  taskkill //PID "$pid" //T //F >/dev/null 2>&1 || true
+  while wave_alive "$pid" && [ "$waited" -lt "$grace" ]; do sleep 1; waited=$((waited + 1)); done
+  if wave_alive "$pid"; then log "  ⚠ codex-wave pid=${pid} still running after taskkill"; else log "  ☠ codex-wave pid=${pid} ended (process tree)"; fi
+}
+
 # ───────────────────────────── main ─────────────────────────────
 echo "════════════════════════════════════════════════════════"
 echo "  super-board stop · ${CONFIG_SLUG}"
@@ -216,10 +246,10 @@ if [ -f "$CODEX_WAVE_MARKER" ]; then
     log "🛑 invalid Codex wave PID marker; preserve claims and inspect $CODEX_WAVE_MARKER"
     exit 1 ;;
   esac
-  if kill -0 "$CODEX_WAVE_PID" 2>/dev/null; then
+  if wave_alive "$CODEX_WAVE_PID"; then
     # Refuse a reused PID, or an unavailable process identity, rather than
     # signal an unrelated process and release a still-running wave's claims.
-    if ! ps -p "$CODEX_WAVE_PID" -o args= 2>/dev/null | grep -q 'super-board-codex-wave'; then
+    if ! wave_args "$CODEX_WAVE_PID" | grep -q 'super-board-codex-wave'; then
       log "🛑 cannot identify Codex wave PID $CODEX_WAVE_PID; preserve claims and inspect $CODEX_WAVE_MARKER"
       exit 1
     fi
@@ -236,7 +266,7 @@ fi
 # and reaps them (up to five seconds), before any claim can be released.
 if [ -n "$CODEX_WAVE_PID" ]; then
   log "🛑 stopping Codex wave and its lane workers"
-  kill_pid "$CODEX_WAVE_PID" "codex-wave" 7
+  stop_wave "$CODEX_WAVE_PID" 7
 fi
 
 # 2. Per-worker wrap-up: comment, release claim, kill.

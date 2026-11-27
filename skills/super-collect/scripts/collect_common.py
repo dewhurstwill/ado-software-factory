@@ -6,6 +6,8 @@
   from cwd. Only the named key is read; values are never printed.
 - since(arg, default_days): `--since 30d` / `--since 2026-09-01` -> aware UTC datetime.
 - fingerprint(source, *parts): the stable dedupe key super-collect-file.sh stamps.
+- resolve(name) / run(argv, ...): find and run a tool the way super-board-compat.py does
+  (Windows: gh.cmd, npm shims, `#!` scripts through Git Bash); shutil.which elsewhere.
 """
 from __future__ import annotations
 
@@ -14,8 +16,43 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 
 UTC = dt.timezone.utc
+
+
+def _load_compat():
+    """super-board-compat.py: the pack's scripts/ or the installed bin/ (skills/x/scripts → ../../..)."""
+    import importlib.util
+    top = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    for folder in ("scripts", "bin"):
+        path = os.path.join(top, folder, "super-board-compat.py")
+        if os.path.isfile(path):
+            spec = importlib.util.spec_from_file_location("sb_compat", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    return None
+
+
+compat = _load_compat()
+
+
+def resolve(name):
+    """argv prefix that runs `name`, or None when it is not installed."""
+    if compat is not None:
+        return compat.resolve(name)
+    found = shutil.which(name)
+    return [found] if found else None
+
+
+def run(argv, **kwargs):
+    """subprocess.run with argv[0] resolved; FileNotFoundError when the tool is missing."""
+    prefix = resolve(argv[0])
+    if prefix is None:
+        raise FileNotFoundError(2, f"{argv[0]} not found on PATH", argv[0])
+    return subprocess.run(prefix + list(argv[1:]), **kwargs)
 
 
 def _find_up(rel):
@@ -35,13 +72,13 @@ def active_config(path=None):
     if not path:
         ptr = _find_up(os.path.join(".claude", "super-board", "active"))
         if ptr:
-            with open(ptr) as f:
+            with open(ptr, encoding="utf-8") as f:
                 slug = f.read().strip()
             cand = os.path.join(os.path.dirname(ptr), "configs", f"{slug}.json")
             path = cand if os.path.exists(cand) else None
     if not path:
         return {}, None
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f), path
 
 
@@ -58,7 +95,7 @@ def secret(name):
         for fname in (".env", ".env.local"):
             p = os.path.join(d, fname)
             if os.path.exists(p):
-                with open(p) as f:
+                with open(p, encoding="utf-8") as f:
                     for line in f:
                         line = line.strip()
                         if line.startswith("#") or "=" not in line:

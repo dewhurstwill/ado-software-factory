@@ -70,6 +70,12 @@ import shutil
 import subprocess
 import sys
 
+# Windows: run tools by PATHEXT or through Git Bash, UTF-8 stdio (super-board-compat.py).
+import importlib.util as _ilu, os as _os
+_cspec = _ilu.spec_from_file_location('sb_compat', _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'super-board-compat.py'))
+compat = _ilu.module_from_spec(_cspec)
+_cspec.loader.exec_module(compat)
+
 COLUMNS = ["Backlog", "Ready", "Building", "QA", "Review", "Blocked", "Done"]
 HOSTS = ("claude", "codex", "opencode")  # config `host`; super-board-host.sh accepts the same
 LABELS = {
@@ -89,7 +95,7 @@ BIN = ["super-board-project-verifier.py", "super-board-skills-ready.py", "super-
        "super-board-deps.sh", "super-board-preflight.sh", "super-board-merge-gate.sh",
        "super-board-merge-policy.py", "super-board-approval.py", "super-board-env-check.sh", "super-board-agents-md.py",
        "super-board-settings.py", "super-board-setup.py", "super-board-usage.sh", "super-board-pr-body.sh",
-       "super-review-file-refactor.sh", "super-qa-file-bug.sh", "super-board-stop.sh"]
+       "super-review-file-refactor.sh", "super-qa-file-bug.sh", "super-board-stop.sh", "super-board-compat.sh", "super-board-compat.py"]
 WORKFLOWS = ["super-board-wave.js", "ui-refine-loop.js"]
 HELPERS_CMD = "npx -y skills@latest add mattpocock/skills --skill '*' -a claude-code -y"
 # Cloudflare's standalone whole-repo audit. Optional: installed by default, never
@@ -118,14 +124,14 @@ def out(obj, code=0):
 
 
 def run(cmd, cwd=None, check=False, input=None):
-    r = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, input=input)
+    r = compat.run(cmd, cwd=cwd, capture_output=True, text=True, input=input)
     if check and r.returncode != 0:
         raise RuntimeError(f"{' '.join(cmd[:3])} failed: {(r.stderr or r.stdout).strip()[:300]}")
     return r
 
 
 def have(tool):
-    return shutil.which(tool) is not None
+    return compat.resolve(tool) is not None
 
 
 def os_family():

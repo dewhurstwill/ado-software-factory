@@ -2,6 +2,7 @@
 # Tests super-board-host.sh — which agent host runs this shell, else exit 65 so the run
 # asks for a host instead of guessing.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 KIT=$(cd "$(dirname "$0")/.." && pwd)
 S="$KIT/scripts/super-board-host.sh"
 fail() { echo "FAIL: $1" >&2; exit 1; }

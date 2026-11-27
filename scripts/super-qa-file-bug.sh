@@ -46,6 +46,7 @@
 # Exits:  0 ok · 64 bad args · 66 unreadable/weak body · 70 GH API failure
 #         71 issue filed but board promote failed (number still on stdout)
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/super-board-compat.sh"  # Windows: jq/python3 shims; no-op elsewhere
 
 TITLE=""; BODY_FILE=""; KIND="bug"; PRIORITY="medium"; CATEGORY=""
 AREA=""; ROUTE=""; SPEC=""; ITER=""; FINGERPRINT=""; SUGGESTED_SKILL=""; CHECK_ONLY=0

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import sbtest  # Git Bash on Windows, pinned git settings
 
 KIT = Path(__file__).resolve().parents[1]
 CLI = KIT / 'scripts/super-board-project-verifier.py'
@@ -139,7 +140,7 @@ class ProjectVerifier(unittest.TestCase):
         self.assertNotEqual(initial['inputs']['map'], self.run_cli()['inputs']['map'])
 
     def test_installed_helper_inspects_project_without_creating_verifier_coverage(self):
-        process = subprocess.run(['bash', str(KIT / 'install.sh'), '--no-hooks', str(self.root)],
+        process = subprocess.run([sbtest.BASH, str(KIT / 'install.sh'), '--no-hooks', str(self.root)],
                                  capture_output=True, text=True)
         self.assertEqual(process.returncode, 0, process.stderr)
         installed = self.root / '.claude/bin/super-board-project-verifier.py'

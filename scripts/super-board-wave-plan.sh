@@ -73,6 +73,7 @@
 #     "flag":  [ {"number":82,"title":"…","why":"…"} ],
 #     "stranded": [ {"number":44,"title":"…"} ] }
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/super-board-compat.sh"  # Windows: jq/python3 shims; no-op elsewhere
 
 CONFIG=""; ITEMS_FILE=""; DEPS_FILE=""
 while [ $# -gt 0 ]; do

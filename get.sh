@@ -26,6 +26,17 @@ say()  { printf '%s\n' "$*"; }
 warn() { printf '⚠️  %s\n' "$*" >&2; }
 die()  { printf '❌ %s\n' "$*" >&2; exit "${2:-1}"; }
 have() { command -v "$1" >/dev/null 2>&1; }
+# A Python 3 that really runs: python3, else python, else `py -3`. A Windows install
+# often has no python3, or only the Microsoft Store stub that prints a hint and fails.
+# (The pack's own scripts get the same rule from scripts/super-board-compat.sh.)
+py3() {
+  local c
+  for c in python3 python 'py -3'; do
+    # shellcheck disable=SC2086 # 'py -3' is two words on purpose
+    if command $c -c 'import sys; sys.exit(sys.version_info[0] != 3)' >/dev/null 2>&1; then command $c "$@"; return; fi
+  done
+  return 127
+}
 
 usage() { sed -n '2,20p' "${BASH_SOURCE[0]:-$0}" 2>/dev/null | sed 's/^# \{0,1\}//' || true; }
 
@@ -90,11 +101,12 @@ main() {
   elif have git; then fetch="git"
   else die "I need either curl + tar, or git, to download super-board. Install one of those and run this again." 69
   fi
-  have python3 || die "python3 is missing. super-board's installer and scripts use it. Install Python 3 (https://www.python.org/downloads/) and run this again." 69
+  py3 -c '' || die "python3 is missing. super-board's installer and scripts use it. Install Python 3 (https://www.python.org/downloads/) and run this again." 69
 
   # One grouped line: what is here ✓, what is not ✗ (onboard's 🔍 Checks installs it).
   local later="" ok="" t
   for t in curl tar git python3 gh jq node; do
+    if [ "$t" = python3 ]; then ok="${ok:+$ok · }python3"; continue; fi  # a working one, checked above
     case "$t" in
       curl|tar) [ "$fetch" = "tar" ] || continue ;;
       git) [ "$fetch" = "git" ] || continue ;;
@@ -121,7 +133,7 @@ main() {
   elif [ "$fetch" = "tar" ]; then
     if [ -z "$ref" ]; then
       ref="$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" 2>/dev/null \
-        | python3 -c 'import json,sys
+        | py3 -c 'import json,sys
 try: print(json.load(sys.stdin).get("tag_name",""))
 except Exception: print("")' 2>/dev/null || true)"
       if [ -z "$ref" ]; then warn "couldn't find a published release; using the main branch instead."; ref="main"; fi

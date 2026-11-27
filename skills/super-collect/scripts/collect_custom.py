@@ -32,7 +32,6 @@ import json
 import os
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 import urllib.error
@@ -64,7 +63,7 @@ def mcp_servers():
     names = set()
     for path in (".mcp.json", os.path.expanduser("~/.claude.json")):
         try:
-            data = json.load(open(path))
+            data = json.load(open(path, encoding="utf-8"))
         except (OSError, ValueError):
             continue
         names |= set((data.get("mcpServers") or {}).keys())
@@ -102,7 +101,7 @@ def classify(text):
     if low in mcp_servers():
         return {"kind": "mcp", "name": slug(low), "target": t}
     first = shlex.split(t)[0] if t else ""
-    if first and shutil.which(first):
+    if first and cc.resolve(first):
         return {"kind": "cli", "name": slug(first), "target": t}
     return {"kind": None, "error": f"couldn't read \"{t}\" — not a link, app, MCP server or command I can run read-only"}
 
@@ -215,10 +214,10 @@ def fetch(src, since=None):
         if MUTATING.search(target) or re.search(r"[;&|<>`$]", target):
             return "refused", "that command looks like it changes something (or chains commands) — give a read-only one"
         argv = shlex.split(target)
-        if not argv or not shutil.which(argv[0]):
+        if not argv or not cc.resolve(argv[0]):
             return "unavailable", f"{argv[0] if argv else target} isn't installed here"
         try:
-            r = subprocess.run(argv, capture_output=True, text=True, timeout=TIMEOUT, stdin=subprocess.DEVNULL)
+            r = cc.run(argv, capture_output=True, text=True, timeout=TIMEOUT, stdin=subprocess.DEVNULL)
         except subprocess.TimeoutExpired:
             return "unavailable", f"timed out after {TIMEOUT}s"
         if r.returncode != 0:
@@ -307,7 +306,7 @@ def main(argv=None):
         if s["name"] not in srcs:
             srcs.append(s["name"])
         tmp = cfg_path + ".tmp"
-        with open(tmp, "w") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
             f.write("\n")
         os.replace(tmp, cfg_path)

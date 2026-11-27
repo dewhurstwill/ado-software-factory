@@ -3,6 +3,7 @@
 # A deny prints a PreToolUse permissionDecision; an allow prints nothing.
 # Fake keys are assembled at runtime so this file never holds a key-shaped literal.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")"
 H="../hooks"
 PASS=0

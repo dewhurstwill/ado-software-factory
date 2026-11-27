@@ -2,6 +2,7 @@
 # Tests scripts/super-board-readme-sync.py and hooks/pre-commit-readme.sh against
 # a throwaway copy of the pack, so the real README is never touched.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")/.."
 PACK=$PWD
 fail() { echo "FAIL: $1" >&2; exit 1; }

@@ -29,6 +29,10 @@
 #   - The worktree is left intact in all exit paths so a human can inspect it.
 
 set -uo pipefail
+# Windows: jq/python3 shims from super-board-compat.sh (pack scripts/, installed bin/); no-op elsewhere.
+for _sb_d in "$(dirname "${BASH_SOURCE[0]}")/../../../scripts" "$(dirname "${BASH_SOURCE[0]}")/../../../bin" .claude/bin; do
+  if [ -f "$_sb_d/super-board-compat.sh" ]; then . "$_sb_d/super-board-compat.sh"; break; fi
+done
 
 N="${1:-}"
 if [[ -z "$N" ]]; then

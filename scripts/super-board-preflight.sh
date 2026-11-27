@@ -47,6 +47,7 @@
 # Exit 0 ok · 64 usage · 79 required forge evidence unavailable (pause the run;
 # a blind pre-flight never says proceed).
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/super-board-compat.sh"  # Windows: jq/python3 shims; no-op elsewhere
 # Fixed read commands: a malformed payload is GitHub's, so it halts (#32).
 export SB_GITHUB_READ_STRICT=1
 

@@ -13,6 +13,7 @@ whose commands are fixed set SB_GITHUB_READ_STRICT=1 to keep halting on it.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,11 @@ import sys
 import time
 
 HALTED = 79
+
+# Windows: run gh/git by PATHEXT or through Git Bash (super-board-compat.py).
+_compat_spec = importlib.util.spec_from_file_location('sb_compat', Path(__file__).with_name('super-board-compat.py'))
+compat = importlib.util.module_from_spec(_compat_spec)
+_compat_spec.loader.exec_module(compat)
 
 
 class ReadHalted(Exception):
@@ -67,8 +73,11 @@ def halt_path():
     if override:
         return Path(override)
     cwd = Path(os.environ.get('SB_REPO_PATH') or Path.cwd())
-    result = subprocess.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+    try:
+        result = compat.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'],
                             capture_output=True, text=True, timeout=5, cwd=cwd)
+    except (OSError, subprocess.SubprocessError):
+        return cwd / '.claude/super-board/github-halt.json'
     if result.returncode != 0:
         return cwd / '.claude/super-board/github-halt.json'
     # One repo, every worktree: <main checkout>/.claude/super-board/ when the common
@@ -88,7 +97,7 @@ def halt(reason, attempts, operation=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     # Exclusive creation keeps the first failure's evidence when workers trip together.
     try:
-        with path.open('x') as stream:
+        with path.open('x', encoding='utf-8') as stream:
             json.dump({'reason': reason, 'attempts': attempts, 'at': int(time.time()), 'operation': operation}, stream)
     except FileExistsError:
         pass
@@ -364,7 +373,7 @@ def read(args, kind='json', meta=None, recovering=False):
         if not recovering:
             check_halt()
         try:
-            result = subprocess.run(['gh', *args], capture_output=True, timeout=30)
+            result = compat.run(['gh', *args], capture_output=True, timeout=30)
             # Decode by hand: text=True turns a lone \r inside a diff line into \n.
             result.stdout = result.stdout.decode('utf-8', 'replace')
             result.stderr = result.stderr.decode('utf-8', 'replace')
@@ -392,6 +401,9 @@ def read(args, kind='json', meta=None, recovering=False):
                 except (ValueError, KeyError, TypeError, AttributeError, IndexError) as error:
                     last = f'GitHub required read returned incomplete evidence: {error}'
                     shape_only = shape_only and not isinstance(error, GitHubErrors)
+        except compat.ToolMissing as error:
+            shape_only = False
+            last = f'GitHub required read could not start: {error}'
         except (OSError, subprocess.SubprocessError):
             shape_only = False
             last = 'GitHub required read timed out or could not start'
@@ -427,7 +439,7 @@ def main():
         if args.resume:
             path = halt_path()
             if path.exists():
-                record = json.loads(path.read_text())
+                record = json.loads(path.read_text(encoding='utf-8'))
                 operation = record.get('operation')
                 if not isinstance(operation, dict):
                     raise ReadHalted('saved failure needs manual outcome reconciliation before restart')
@@ -437,7 +449,7 @@ def main():
                 if command:
                     if args.kind != operation['kind']:
                         raise ValueError('replacement recovery read must validate the same evidence kind')
-                    meta = json.loads(Path(args.meta).read_text()) if args.meta else operation.get('meta')
+                    meta = json.loads(Path(args.meta).read_text(encoding='utf-8')) if args.meta else operation.get('meta')
                     if args.kind == 'diff':
                         validate(json.dumps(meta), 'metadata')
                     read(command, args.kind, meta, recovering=True)
@@ -456,7 +468,7 @@ def main():
             _, pages = read(['api','graphql','--paginate','--slurp','-f','query='+query,'-F','owner='+owner,'-F','repo='+repo], 'issue-history')
             print(json.dumps([n for page in pages for n in page['data']['repository']['issues']['nodes']]))
             return 0
-        meta = json.loads(Path(args.meta).read_text()) if args.meta else None
+        meta = json.loads(Path(args.meta).read_text(encoding='utf-8')) if args.meta else None
         output, _ = read(command, args.kind or 'json', meta)
         sys.stdout.write(output)
         return 0

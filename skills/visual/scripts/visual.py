@@ -253,7 +253,7 @@ def output_path(root: Path, data: dict) -> Path:
         d.mkdir(exist_ok=True)
         gi = d / ".gitignore"
         if not gi.exists():
-            gi.write_text("*\n")
+            gi.write_text("*\n", encoding="utf-8")
     d.mkdir(parents=True, exist_ok=True)
     return d / name
 
@@ -546,7 +546,7 @@ def cmd_skillmap(a) -> None:
     fam = {}
     fpath = sk / "families.json"
     if fpath.is_file():
-        for group in json.loads(fpath.read_text()).values():
+        for group in json.loads(fpath.read_text(encoding="utf-8")).values():
             for name, blurb in (group.get("skills") or {}).items():
                 fam[name] = blurb
     skills = {}
@@ -677,7 +677,7 @@ def cmd_skillmap(a) -> None:
     snip = pack / "hooks" / "settings-snippet.json"
     hook_ids = []
     if snip.is_file():
-        cfg = json.loads(snip.read_text()).get("hooks", {})
+        cfg = json.loads(snip.read_text(encoding="utf-8")).get("hooks", {})
         for event, groups in cfg.items():
             eid = "event:" + event
             add_node({"id": eid, "label": event, "kind": "hook", "verbs": [],

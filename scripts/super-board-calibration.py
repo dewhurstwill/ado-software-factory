@@ -8,6 +8,12 @@ import re
 import subprocess
 import sys
 
+# Windows: run tools by PATHEXT or through Git Bash, UTF-8 stdio (super-board-compat.py).
+import importlib.util as _ilu, os as _os
+_cspec = _ilu.spec_from_file_location('sb_compat', _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'super-board-compat.py'))
+compat = _ilu.module_from_spec(_cspec)
+_cspec.loader.exec_module(compat)
+
 
 class Skip(ValueError):
     def __init__(self, reason):
@@ -76,7 +82,7 @@ def installed_skill(settings, root):
 
 
 def git_ok(root, *args):
-    return subprocess.run(['git', '-C', str(root), *args], stdout=subprocess.DEVNULL,
+    return compat.run(['git', '-C', str(root), *args], stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL).returncode == 0
 
 

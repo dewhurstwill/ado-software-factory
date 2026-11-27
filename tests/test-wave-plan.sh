@@ -9,6 +9,7 @@
 # because the old contract shipped a board where five cards sat in Blocked long
 # after their blockers had closed.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")"
 PLAN="../scripts/super-board-wave-plan.sh"
 CFG=fixtures/wave-config.json

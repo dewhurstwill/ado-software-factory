@@ -113,7 +113,7 @@ jobs:
     name: safety (windows-latest / Git Bash / py${{ matrix.python }})
     runs-on: windows-latest
     continue-on-error: true
-    timeout-minutes: 40
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -142,6 +142,9 @@ jobs:
           python3 --version || true
           jq --version || true
           printf 'a\nb\n' | jq -R . | od -c | head -3
+          # CreateProcess finds System32's bash.exe (WSL) before PATH for a bare 'bash'.
+          ls -l /c/Windows/System32/bash.exe 2>&1 || true
+          python -c "import shutil; print('python which bash:', shutil.which('bash'))"
       - name: Run every offline safety suite
         env:
           SB_RUNTIME_TEST_ARTIFACTS: ${{ runner.temp }}/runtime-test-evidence

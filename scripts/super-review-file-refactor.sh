@@ -28,6 +28,7 @@
 # against `forge ticket history`, and a work item is on the board once it exists: the holding
 # column is set when it is created.
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/super-board-compat.sh"  # Windows: jq/python3 shims; no-op elsewhere
 
 CONFIG=""; TITLE=""; BODY_FILE=""; FINGERPRINT=""
 FILES=""; STRENGTH="worth-exploring"; AREA=""; PR=""; COLUMN=""

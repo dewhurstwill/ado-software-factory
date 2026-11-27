@@ -153,8 +153,29 @@ def group_members(group):
     return members
 
 
+def stop_windows(process, grace=.5):
+    """Windows has no process groups or SIGTERM: end the process tree with taskkill /T /F.
+
+    taskkill finds descendants through their live parent, so children of a wrapper that
+    already exited are out of its reach (a Job Object would be needed for those).
+    """
+    try:
+        if process.poll() is None:
+            subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                           capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    finally:
+        try:
+            process.wait(timeout=max(grace, 5))
+        except subprocess.TimeoutExpired:
+            pass
+
+
 def stop(process, grace=.5):
     """Terminate live owned group members, including children of an exited wrapper."""
+    if os.name == 'nt':
+        return stop_windows(process, grace)
     try:
         parent_exited = process.poll() is not None
         original = group_members(process.pid)
@@ -231,7 +252,7 @@ def run_adapter(argv, cwd, env, timeout):
 
 def measure(config_path, output):
     config_path, output = Path(config_path).resolve(), Path(output).resolve()
-    config, root = json.loads(config_path.read_text()), config_path.parent
+    config, root = json.loads(config_path.read_text(encoding='utf-8')), config_path.parent
     if not isinstance(config, dict):
         raise ValueError('config must be a JSON object')
     validate(config, root)
@@ -271,7 +292,7 @@ def measure(config_path, output):
                 raise RuntimeError('app URL is already occupied: ' + name)
             except OSError:
                 pass
-            log = (output / (name + '-server.log')).open('w')
+            log = (output / (name + '-server.log')).open('w', encoding='utf-8')
             logs.append(log)
             process = subprocess.Popen(side['start_command'], cwd=root / side.get('cwd', '.'),
                                        env=common_env, stdout=log, stderr=log, start_new_session=True)
@@ -290,7 +311,7 @@ def measure(config_path, output):
                 try:
                     result = run_adapter(config['scenario_command'], root, env, config.get('timeout_seconds', 30))
                     row['exit_code'] = result.returncode
-                    (sample_dir / 'adapter.stderr.log').write_text(result.stderr)
+                    (sample_dir / 'adapter.stderr.log').write_text(result.stderr, encoding='utf-8')
                     payload = json.loads(result.stdout)
                     if not isinstance(payload, dict):
                         raise ValueError('adapter output must be a JSON object')
@@ -348,7 +369,7 @@ def measure(config_path, output):
                 report['timing']['outcome'] = 'inconclusive'
         for log in logs:
             log.close()
-        (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
+        (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     return report, 2 if failure or any(report['correctness_failures'].values()) else 0
 
 

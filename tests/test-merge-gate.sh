@@ -9,6 +9,7 @@
 # the base branch red. These tests pin the two properties that prevent it — one
 # merge at a time, and the proof happens under the lock.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")"
 GATE="../scripts/super-board-merge-gate.sh"
 

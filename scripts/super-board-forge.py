@@ -224,7 +224,7 @@ class GitHubBackend(forge_github.GhVerbs, Backend):
         if found:
             return found
         path = (self.config.get('repo') or {}).get('path') or os.environ.get('SB_REPO_PATH') or '.'
-        result = subprocess.run(['git', '-C', path, 'remote', 'get-url', 'origin'],
+        result = github_read.compat.run(['git', '-C', path, 'remote', 'get-url', 'origin'],
                                 capture_output=True, text=True)
         return self.slug(result.stdout) if result.returncode == 0 else ''
 
@@ -301,7 +301,7 @@ class GitHubBackend(forge_github.GhVerbs, Backend):
         env = dict(os.environ)
         if found:
             env['GH_REPO'] = found
-        rc = subprocess.run(['gh', 'api', '-X', 'PATCH', f'repos/{{owner}}/{{repo}}/pulls/{a.number}',
+        rc = github_read.compat.run(['gh', 'api', '-X', 'PATCH', f'repos/{{owner}}/{{repo}}/pulls/{a.number}',
                              '--input', '-'], input=payload.encode('utf-8'), env=env).returncode
         if rc:
             raise ForgeError('gh pr body update failed', rc)
@@ -325,7 +325,7 @@ class GitHubBackend(forge_github.GhVerbs, Backend):
             cmd += ['--body-file', a.body_file]
         cmd += ['--match-head-commit', a.match_head]
         sys.stdout.flush()
-        rc = subprocess.run(cmd).returncode
+        rc = github_read.compat.run(cmd).returncode
         if rc:
             # 5, 6, 7 and 65 are the gate's own "definite refusal" codes (Azure DevOps `pr merge`);
             # a `gh` failure is ambiguous, so it must never look like one of them.

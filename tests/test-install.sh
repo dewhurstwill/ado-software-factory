@@ -16,6 +16,7 @@
 # asserts they are still there afterwards. An installer is allowed to fail; it is
 # never allowed to take the neighbours with it.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")"
 INSTALL="../install.sh"
 
@@ -290,7 +291,7 @@ rm -rf "$T"
 T=$(mktemp -d); printf '# AGENTS.md\n- mine\n' > "$T/AGENTS.md"
 "$INSTALL" --no-hooks "$T" >/dev/null 2>&1
 [ "$(cat "$T/AGENTS.md")" = "$(printf '# AGENTS.md\n- mine')" ] || fail "install must not add a block uninvited"
-for s in super-board-skills-ready.py super-board-host.sh super-board-codex-wave.sh super-board-codex-lane.sh super-board-env-check.sh super-board-merge-policy.py super-board-agents-md.py super-board-settings.py super-board-setup.py super-board-forge.py super-board-forge-ado.py super-board-forge-ado-pr.py super-board-forge-github.py; do
+for s in super-board-skills-ready.py super-board-host.sh super-board-codex-wave.sh super-board-codex-lane.sh super-board-env-check.sh super-board-merge-policy.py super-board-agents-md.py super-board-settings.py super-board-setup.py super-board-forge.py super-board-forge-ado.py super-board-forge-ado-pr.py super-board-forge-github.py super-board-compat.sh super-board-compat.py; do
   [ -x "$T/.claude/bin/$s" ] || fail "$s was not installed"
 done
 rm -rf "$T"

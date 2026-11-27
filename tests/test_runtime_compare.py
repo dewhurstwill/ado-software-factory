@@ -318,20 +318,29 @@ class ProcessCleanupTests(unittest.TestCase):
                 group,child_pid=map(int,pidfile.read_text().split())
                 deadline=time.monotonic()+2
                 while time.monotonic()<deadline:
-                    state=subprocess.run(['ps','-o','stat=','-p',str(child_pid)],capture_output=True,text=True).stdout.strip()
+                    if os.name=='nt':  # Windows PIDs: tasklist, not ps; no zombies there
+                        listed=subprocess.run(['tasklist','/FI',f'PID eq {child_pid}','/FO','CSV','/NH'],capture_output=True,text=True).stdout
+                        state='' if f'"{child_pid}"' not in listed else 'R'
+                    else:
+                        state=subprocess.run(['ps','-o','stat=','-p',str(child_pid)],capture_output=True,text=True).stdout.strip()
                     if not state or state.startswith('Z'):
                         break
                     time.sleep(.05)
                 self.assertTrue(not state or state.startswith('Z'),'descendant remains running after timeout')
             finally:
-                if pidfile.exists():
-                    group,_=map(int,pidfile.read_text().split())
-                    try: os.killpg(group,signal.SIGKILL)
-                    except ProcessLookupError: pass
-                if proc.poll() is None:
-                    os.killpg(proc.pid,signal.SIGKILL)
+                if os.name=='nt':
+                    for pid in ([int(x) for x in pidfile.read_text().split()] if pidfile.exists() else [])+[proc.pid]:
+                        subprocess.run(['taskkill','/PID',str(pid),'/T','/F'],capture_output=True)
+                else:
+                    if pidfile.exists():
+                        group,_=map(int,pidfile.read_text().split())
+                        try: os.killpg(group,signal.SIGKILL)
+                        except ProcessLookupError: pass
+                    if proc.poll() is None:
+                        os.killpg(proc.pid,signal.SIGKILL)
                 proc.communicate(timeout=1)
 
+@unittest.skipIf(os.name=='nt','POSIX process-group safety; Windows ends the tree with taskkill (stop_windows), covered by ProcessCleanupTests')
 class GroupSafetyTests(unittest.TestCase):
     def process(self, exited=False):
         p=mock.Mock(pid=999991)

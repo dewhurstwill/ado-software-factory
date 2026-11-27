@@ -11,7 +11,8 @@
 # Shared here: input checks, readiness/GitHub gates, lane prompt, result schema and
 # validation, signal handling. Per host: one class in BACKENDS below.
 set -euo pipefail
-exec python3 - "${BASH_SOURCE[0]}" "$@" <<'PY'
+. "$(dirname "${BASH_SOURCE[0]}")/super-board-compat.sh"  # Windows: jq/python3 shims; no-op elsewhere
+sb_exec_python - "${BASH_SOURCE[0]}" "$@" <<'PY'
 import argparse
 import importlib.util
 import json
@@ -21,6 +22,11 @@ import signal
 import subprocess
 import sys
 import tempfile
+
+# Windows: codex.cmd / shell-script tools resolve through super-board-compat.py.
+_compat_spec = importlib.util.spec_from_file_location('sb_compat', Path(sys.argv[1]).resolve().with_name('super-board-compat.py'))
+compat = importlib.util.module_from_spec(_compat_spec)
+_compat_spec.loader.exec_module(compat)
 
 def fail(message, code=64):
     print(message, file=sys.stderr)
@@ -236,7 +242,7 @@ with tempfile.TemporaryDirectory(prefix=f'super-board-{backend.name}-') as tempo
     run['schema_path'].write_text(json.dumps(schema))
     command, stdin = backend.command(run)
     try:
-        child = subprocess.Popen(command, stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+        child = subprocess.Popen(compat.argv_for(command), stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
                                  stdout=subprocess.PIPE if backend.capture_stdout else sys.stderr, text=True)
         stdout, _ = child.communicate(stdin)
         require_verification_ready()

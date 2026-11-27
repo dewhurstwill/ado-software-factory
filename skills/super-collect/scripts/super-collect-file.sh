@@ -35,6 +35,10 @@
 #         70 gh failure · 71 filed but not placed (number still on stdout)
 #         79 repository paused (existing issue number still on stdout after discovery)
 set -uo pipefail
+# Windows: jq/python3 shims from super-board-compat.sh (pack scripts/, installed bin/); no-op elsewhere.
+for _sb_d in "$(dirname "${BASH_SOURCE[0]}")/../../../scripts" "$(dirname "${BASH_SOURCE[0]}")/../../../bin" .claude/bin; do
+  if [ -f "$_sb_d/super-board-compat.sh" ]; then . "$_sb_d/super-board-compat.sh"; break; fi
+done
 
 ORIGINAL_ARGS=("$@")
 CONFIG=""; TYPE=""; SOURCE=""; TITLE=""; BODY_FILE=""; FP=""
@@ -115,7 +119,7 @@ case "$REPO_NAME" in */*) ;; *) die "cannot resolve owner/name for collector" 70
 STATE="$BIN/super-board-collect-state.py"
 LOCK_KEY=$(printf '%s' "$REPO_NAME" | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.read().lower().encode()).hexdigest())')
 if [ "${SB_COLLECT_LOCK_HELD:-}" != "$LOCK_KEY" ]; then
-  exec python3 "$STATE" --repo "$REPO_NAME" --lock -- "$0" "${ORIGINAL_ARGS[@]}"
+  sb_exec_python "$STATE" --repo "$REPO_NAME" --lock -- "$0" "${ORIGINAL_ARGS[@]}"
 fi
 state() { python3 "$STATE" --repo "$REPO_NAME" --action "$1" --fingerprint "${FP:-adopt|$ADOPT}" --digest "${DIGEST:-}" --issue "${2:-}"; }
 DIGEST=""

@@ -6,6 +6,7 @@
 #
 #   bash tests/test-setup.sh
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")/.."
 PACK="$PWD"
 SETUP="$PACK/scripts/super-board-setup.py"
@@ -88,7 +89,7 @@ echo "$OUT" | q '.changes == [] and .written == false' || fail "second migration
 #     A curated PATH, not "/usr/bin:/bin": GitHub's ubuntu runners ship gh in /usr/bin.
 NOBIN="$WORK/nobin"; mkdir -p "$NOBIN"
 for t in git apt-get dnf; do p=$(command -v "$t" || true); [ -n "$p" ] && ln -sf "$p" "$NOBIN/$t"; done
-OUT=$(PATH="$NOBIN" "$(command -v python3)" "$SETUP" check --root "$T" || true)
+OUT=$(PATH="$NOBIN" "${SB_PYTHON:-$(type -P python3)}" "$SETUP" check --root "$T" || true)
 echo "$OUT" | q '.needs | map(.name) | index("gh")' || fail "missing gh should be in needs: $OUT"
 case "$(uname)" in Darwin) echo "$OUT" | q '.needs[] | select(.name == "gh") | .command == "brew install gh"' || fail "mac command should be brew: $OUT" ;; esac
 echo "$OUT" | q '.needs[] | select(.name == "node") | .command | test("skills@latest add mattpocock/skills")' \
