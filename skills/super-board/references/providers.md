@@ -68,6 +68,9 @@ directly.
 | `ticket view <N>` | `{number, title, body}` | `issue view N --json number,title,body` | issue |
 | `ticket list --state closed --limit N` | `[{number,title,body,stateReason}]` | `issue list --state closed --limit N --json number,title,body,stateReason` | issues-closed |
 | `ticket graph` | array of every open issue: `{number,title,body,state,labels:{nodes:[{name}]},comments:{nodes:[{body}]}}` (last 8 comments) | `api graphql --paginate --slurp` (open issues, 100 a page), pages flattened | issues |
+| `pr approval <N>` | `{state, headRefOid, closes:[ticket numbers]}` (see "Human approval") | `api graphql --paginate --slurp -f query=<approval query> -F owner= -F repo= -F pr=N`; `closes` = same-repo `closingIssuesReferences`, plus the body's closing keywords when the base is not the default branch; incomplete link pages or a snapshot that changed between pages fail | approval |
+| `ticket comments <N>` | `[[{id,body,user:{login,type},created_at,updated_at}]]` (the issue or PR conversation) | `api --paginate --slurp repos/{owner}/{repo}/issues/N/comments?per_page=100` | comments |
+| `permission <login>` | `{permission}`: `admin`, `maintain`, `write`, `triage`, `read`, `none`; `null` for a string that is not a login (no call) | `api repos/{owner}/{repo}/collaborators/<login>/permission` | permission |
 | `board <verb> ...` | reserved: `super-board-card.sh` hands an `azure-devops` config to this | none on GitHub (the card script owns its verbs) | |
 
 Shape rules for any backend: the field names above are exact; `state`/`stateReason` use
@@ -132,11 +135,12 @@ None: exit 69 naming the three options.
 | `ticket edit <N> [--title] [--body-file] [--add-label L]... [--remove-label L]...` | | |
 | `ticket close <N> --reason completed\|not-planned` | `closed #N (reason)`; moves to Done; not-planned adds tag `not-planned` | |
 | `ticket comment <N> --body-file F` | comment id | |
-| `ticket comments <N>` | `[[{id,body,user:{login,type},created_at,updated_at}]]`, `[[]]` when none | |
+| `ticket comments <N>` | `[[{id,body,user:{login,type},created_at,updated_at,version}]]`, `[[]]` when none. `created_at`/`updated_at` = `createdDate`/`modifiedDate`; `version` starts at 1 and grows on every edit | |
 | `ticket comment-edit <N> <ID> --body-file F` | comment id | |
 | `ticket claim <N>` | `claimed #N`. Reads; a claim tag that is not ours: exit 4; ours: exit 0 (idempotent); else `add` ours, re-read and verify. If another holder's tag landed too, the lexicographically smallest claim tag wins and the loser takes its own tag back (rev-tested replace) | 4 already claimed or lost the race |
 | `ticket release <N> [--force]` | `released #N (<tags>)`; removes OUR claim tag only; `--force` removes every claim tag (crash-recovery sweep). Idempotent | |
 | `whoami` | `{login,id}` | |
+| `permission <login>` | `{permission}`: `"approve"` when `ado.approvers` lists the unique name (case-insensitive), else `"none"`. No call | 66 `ado.approvers` not a list of names |
 | `quota` | saved `ado-quota.json` plus `seen`; when the service sends only `X-RateLimit-Cost`, `cost` (last call) and `total_cost` (running) | |
 | `check`, `halt <reason>`, `provider`, `repo` | as above | 79 when halted |
 
@@ -212,9 +216,10 @@ and is not trusted for them. A failed labels read is a failed required read (hal
 | `pr create --base B --head H --title T --body-file F [--draft] [--label L]... [--closes <ticket>]...` | URL, then the number (last line) | 65 body too long, nothing created |
 | `pr ready <N>` | `ready #N` | |
 | `pr comment <N> --body-file F` | `<threadId>.<commentId>` | |
-| `pr comments <N>` | `[[{id:"<thread>.<comment>", body, user:{login,type:"User"}, created_at, updated_at}]]`, oldest first | |
+| `pr comments <N>` | `[[{id:"<thread>.<comment>", body, user:{login,type:"User"}, created_at, updated_at}]]`, oldest first. `created_at` = `publishedDate`; `updated_at` = `lastContentUpdatedDate` (else `lastUpdatedDate`), because `lastUpdatedDate` also moves when nothing in the text changed | |
 | `pr comment-edit <N> <thread>.<comment> --body-file F` | the id | 64 bad id |
 | `pr links <N>` | `{closes:[<work item ids>]}` from the PR's linked work items | |
+| `pr approval <N>` | `{state, headRefOid, closes}`: `pr state`'s state and head, `pr links`' work items (never text parsing, whatever the target branch) | 3 not found |
 
 `pr list` `body` is the raw description: a moved history block shows as its stub line. `pr comments` leaves out
 `system` comments, deleted ones and the overflow thread. `$top` is passed as `--limit`.
@@ -266,10 +271,53 @@ writes one complete body. Still over 4,000 after both moves: exit 65 naming the 
 (`super-board-pr-body.sh` passes the 65 on and does not halt). The thread is written before the description, and reset after it.
 HTML comments (`<!-- sb:... -->`) survive in descriptions and thread comments (unlike work items).
 
+## Human approval
+
+`super-board-approval.py` alone decides whether a held merge (gate exit 7 or 8) has human approval.
+It takes `--config` (provider; GitHub when absent) and keeps `--repo` for GitHub callers. GitHub runs
+the same `gh` reads through the read helper with the same kinds (`approval`, `comments`,
+`permission`; argv from the forge's GitHub backend). Azure DevOps loads the forge's backend in-process:
+`pr approval`, `pr comments`, `ticket comments`, `whoami` and the `ado.approvers` check. A halt is
+exit 79 on both; anything else unreadable is `approved: false`.
+
+**Trust source.** GitHub: the commenter's current collaborator permission (`write`, `maintain`,
+`admin`). Azure DevOps: the config allow-list `ado.approvers: ["user@example.com", ...]`, unique names
+compared case-insensitively with the comment author's unique name (never the display name). Absent or
+empty: nobody approves by comment, and a person merges held PRs in Azure DevOps. Why a list: the
+config is committed and reviewed, so who may release a held merge is visible and auditable, and it
+needs no extra token scope (group membership needs the Graph scope, which the pack does not ask for).
+
+**Rules, the same on both** (Azure DevOps: `tests/test_approval_ado.py`; GitHub: `tests/test_approval.py`):
+
+1. A request is the newest trusted 🙋 block (`Reason tag: …🙋` or an `approval-request:` line). It
+   must carry exactly one `approval-request:` line pinning repo, PR, full head and the policy/steps
+   hash. GitHub: the request's repo is `owner/name`; Azure DevOps: `<org>/<project>/<repository>`,
+   lower-case.
+2. Trusted requester: GitHub write+; Azure DevOps an approver or the token's own identity (the pack
+   posts requests; its unique name comes from `connectionData`'s `Account`, else nobody).
+3. Any newer trusted 🙋 block supersedes the request; blocks from anyone else are ignored. Two
+   newest blocks at the same instant: hold.
+4. Approval is a later comment that is exactly `done` (`.`/`!` allowed), from a `User` who may
+   approve, in the same place as the request (the same work item, or the same PR). Azure DevOps
+   work item comments may wrap that word in one `<div>` or `<p>` (the rich-text editor).
+5. Edited comments count for nothing: an edited request holds, an edited `done` is skipped. GitHub
+   and PR threads: `updated_at != created_at` (PR threads use `lastContentUpdatedDate`). Work items:
+   also `version != 1` (or no version).
+6. The PR must be open and at the head the request pins; the policy/steps must be unchanged.
+7. Only the PR and the tickets it really links are read. Azure DevOps: the PR's own work item
+   links, and PR ids and work item ids are separate spaces (a `done` on PR 1 never answers work
+   item 1). File-anchored PR threads are ignored, like GitHub review comments.
+8. Incomplete evidence never approves: unfinished link pages (GitHub), a repeated work item comment
+   continuation token (Azure DevOps), unreadable timestamps. Azure DevOps also re-reads the PR after
+   the comments and holds if its head, state or links moved.
+
+**Solo identity (Azure DevOps).** One PAT often belongs to the human who also approves. An identity
+that is both `whoami` and on `ado.approvers` MAY approve, as a solo GitHub owner whose own login runs
+the pack may (`test_current_request_allows_solo_owner`). Not on the list, the pack's identity can post
+requests but never approve. The mechanism cannot tell the person from an agent holding their token,
+on either provider: lanes must never write `done` (block-template.md, "Trust boundary").
+
 ## Not behind the forge yet
 
-`super-board-approval.py` (approval comments, closing-issue links), the card verbs in
-`super-board-card.sh`, and the filer, lane, run and status scripts still call `gh` directly.
-On Azure DevOps the merge gate does not call the approval script: approval is never verified, so a
-human-gated PR exits 7 and a `needs-you` one exits 8, waiting for a human to merge by hand.
-`super-board-preflight.sh` skips the GitHub quota guard on Azure DevOps.
+The card verbs in `super-board-card.sh`, and the filer, lane, run and status scripts still call `gh`
+directly. `super-board-preflight.sh` skips the GitHub quota guard on Azure DevOps.

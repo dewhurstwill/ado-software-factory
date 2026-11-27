@@ -143,7 +143,7 @@ fi
 
 FORGE=(python3 "$HERE/super-board-forge.py" --config "$CONFIG")
 CONFIG_JSON=$(cat "$CONFIG")
-# Only wording and the approval lookup depend on the provider; every other call goes through the forge.
+# Only wording depends on the provider; every other call goes through the forge (approval.py too).
 PROVIDER=$(echo "$CONFIG_JSON" | jq -r '.provider // "github"' | tr -d '\r')
 case "$PROVIDER" in azure-devops) FORGE_NAME="Azure DevOps" ;; *) FORGE_NAME="GitHub" ;; esac
 printf '%s\n' "$CONFIG_JSON" | python3 "$HERE/super-board-verification-ready.py" --config -
@@ -247,25 +247,18 @@ PLAN=$(python3 "$HERE/super-board-merge-policy.py" --config "$CONFIG" --meta "$M
 # The label is display-only. A request posted before `done` pins the exact head
 # and policy/commands. Re-read trusted approval evidence; never mint it here.
 APPROVED=false
-# Human approval evidence is read by super-board-approval.py, which only knows GitHub. On another
-# provider it cannot be verified, so it fails safe: never approved, a human merges.
+# Human approval evidence is read by super-board-approval.py through the config's provider
+# (GitHub: collaborator permission; Azure DevOps: the ado.approvers allow-list).
 approval_check() {
-  if [ "$PROVIDER" = github ]; then
-    APPROVAL=$(python3 "$HERE/super-board-approval.py" --repo "$REPO" --pr "$PR" \
-      --head "$HEAD_SHA" --plan "$PLAN") || APPROVAL='{"approved":false}'
-  else
-    APPROVAL='{"approved":false}'
-  fi
+  APPROVAL=$(python3 "$HERE/super-board-approval.py" --config "$CONFIG" --repo "$REPO" --pr "$PR" \
+    --head "$HEAD_SHA" --plan "$PLAN") || APPROVAL='{"approved":false}'
   "${FORGE[@]}" check || exit $?
   APPROVED=$(echo "$APPROVAL" | jq -r '.approved // false')
 }
+# A request that cannot be printed still holds (the caller's 7/8): a person then merges by hand.
 approval_request() {
-  if [ "$PROVIDER" != github ]; then
-    say "approval requests are not available on ${FORGE_NAME} yet; a human merges PR #${PR} by hand"
-    return 0
-  fi
-  python3 "$HERE/super-board-approval.py" --request --repo "$REPO" --pr "$PR" \
-    --head "$HEAD_SHA" --plan "$PLAN"
+  python3 "$HERE/super-board-approval.py" --request --config "$CONFIG" --repo "$REPO" --pr "$PR" \
+    --head "$HEAD_SHA" --plan "$PLAN" || say "could not print an approval request; a human merges PR #${PR}"
 }
 HUMAN=$(echo "$PLAN" | jq -r '.human[] | "human-gate: \(.category) — \(.why)"')
 if [ -n "$HUMAN" ] || [ "$(echo "$PLAN" | jq '.needs_you | length')" -gt 0 ]; then

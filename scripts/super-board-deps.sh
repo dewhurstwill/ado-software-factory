@@ -104,9 +104,15 @@ fi
 
 APPROVAL_REPO="$REPO"
 [ -z "$FROM" ] || APPROVAL_REPO=""
-# Approval comments are still read through `gh`; another provider's repo is not an owner/name
-# slug, so no card there can be verified as human-approved (needsYouDone stays false: fail safe).
-[ "$PROVIDER" = "github" ] || APPROVAL_REPO=""
+# The approval helper reads through the config's provider (GitHub, or Azure DevOps with its
+# ado.approvers allow-list); it gets a fresh copy of the config, as the forge does above.
+approval_deps() {
+  if [ -n "$CONFIG_JSON" ]; then
+    python3 "$HERE/super-board-approval.py" --deps --repo "$APPROVAL_REPO" --config <(printf '%s\n' "$CONFIG_JSON")
+  else
+    python3 "$HERE/super-board-approval.py" --deps --repo "$APPROVAL_REPO"
+  fi
+}
 echo "$ISSUES" | jq --arg only "$ONLY" '
   # ---- the parser ---------------------------------------------------------
   # Everything after the LAST "## Blocked by" heading, stopping at the next
@@ -204,4 +210,4 @@ echo "$ISSUES" | jq --arg only "$ONLY" '
           needsYouDone: false }
     ]
   | ( if $filter == null then . else map(select(.number as $n | $filter | index($n))) end )
-  | INDEX(.number | tostring)' | python3 "$(dirname "${BASH_SOURCE[0]}")/super-board-approval.py" --deps --repo "$APPROVAL_REPO"
+  | INDEX(.number | tostring)' | approval_deps

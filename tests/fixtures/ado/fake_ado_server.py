@@ -38,6 +38,24 @@ STATES = {
 COLUMNS_SEVEN = ['Backlog', 'Ready', 'Building', 'QA', 'Review', 'Blocked', 'Done']
 
 
+LONG_TEXT = ('System.Description', 'Microsoft.VSTS.TCM.ReproSteps')
+
+
+def stored(text):
+    """What the live service hands back for a Markdown long-text field or work item comment:
+    `&` and `"` as entities, characters outside the BMP (most emoji) as numeric references.
+    `<`/`>` and BMP characters such as the em dash come back as written. Titles are untouched.
+    Measured: `"x" & <b>t</b> 🙋 —` reads back `&quot;x&quot; &amp; <b>t</b> &#128587; —`."""
+    if not isinstance(text, str):
+        return text
+    text = text.replace('&', '&amp;').replace('"', '&quot;')
+    return ''.join(f'&#{ord(ch)};' if ord(ch) > 0xFFFF else ch for ch in text)
+
+
+def stored_comment(c):
+    return dict(c, text=stored(c['text'])) if isinstance(c, dict) and 'text' in c else c
+
+
 def load(name):
     return json.loads((HERE / name).read_text())
 
@@ -100,7 +118,7 @@ class Fake:
         name = self.col_name(item)
         if name is not None and item['type'] in self.board_types():
             f[WEF] = name
-        f = {k: v for k, v in f.items() if v is not None}
+        f = {k: (stored(v) if k in LONG_TEXT else v) for k, v in f.items() if v is not None}
         if fields:
             f = {k: v for k, v in f.items() if k in fields}
         return {'id': item['id'], 'rev': item['rev'], 'fields': f,
@@ -116,6 +134,15 @@ class Fake:
                                                     'doneField': {'referenceName': WEF + '.Done'},
                                                     'rowField': {'referenceName': 'System.Kanban.Lane'}},
                 'allowedMappings': allowed}
+
+    def add_comment(self, n, text, by=None, fmt='markdown'):
+        """A work item comment; one clock with the PR threads, so times order across both."""
+        at = self.pulls.tick()
+        c = {'id': self.next_comment, 'version': 1, 'text': text, 'format': fmt,
+             'createdDate': at, 'modifiedDate': at, 'createdBy': by or USER}
+        self.next_comment += 1
+        self.comments.setdefault(n, []).append(c)
+        return c
 
     # ---- helpers for tests ---------------------------------------------------------
     def reqs(self, method=None, pattern=None):
@@ -335,22 +362,18 @@ class Handler(BaseHTTPRequestHandler):
         store = fake.comments.setdefault(n, [])
         m = req['method']
         if m == 'POST':
-            c = {'id': fake.next_comment, 'version': 1, 'text': req['body']['text'], 'format': 'markdown',
-                 'createdDate': '2026-11-27T10:00:00Z', 'modifiedDate': '2026-11-27T10:00:00Z', 'createdBy': USER}
-            fake.next_comment += 1
-            store.append(c)
-            return 200, {}, c
+            return 200, {}, stored_comment(fake.add_comment(n, req['body']['text']))
         if m == 'PATCH':
             c = next((c for c in store if c['id'] == int(cid)), None)
             if c is None:
                 return 404, {}, {'message': 'comment not found'}
             c['text'], c['version'] = req['body']['text'], c['version'] + 1
-            c['modifiedDate'] = '2026-11-27T11:00:00Z'
-            return 200, {}, c
+            c['modifiedDate'] = fake.pulls.tick()
+            return 200, {}, stored_comment(c)
         start = int(req['query'].get('continuationToken', ['0'])[0])
         size = min(int(req['query'].get('$top', ['200'])[0]), fake.page_size)
         page = store[start:start + size]
-        out = {'totalCount': len(store), 'count': len(page), 'comments': page}
+        out = {'totalCount': len(store), 'count': len(page), 'comments': [stored_comment(c) for c in page]}
         if start + size < len(store):
             out['continuationToken'] = str(start + size)
         return 200, {}, out

@@ -73,7 +73,7 @@ Azure DevOps support is being added in this fork and is not complete:
 | Board setup (`board ensure`: seven columns, bugs on the board) | Works, checked live |
 | Pull requests: open, comment, read the diff, rewrite PR body blocks | Works, checked live |
 | Merge gate: pinned to the reviewed commit, squash, branch policies respected | Works, checked live |
-| Approving a gated merge with a "done" comment | Not yet: a held PR is merged by a person in Azure DevOps |
+| Approving a held merge with a `done` comment | Works, checked live. Only sign-ins listed in `ado.approvers` count |
 | Onboarding questions, status view, ticket filers, collectors, skill instructions | Still GitHub-only |
 
 To try it, install from this fork and add the block below to
@@ -91,10 +91,14 @@ curl -fsSL https://raw.githubusercontent.com/dewhurstwill/ado-software-factory/m
     "project": "<project>",
     "team": "<project> Team",
     "board": "Stories",
-    "repository": "<repo>"
+    "repository": "<repo>",
+    "approvers": ["you@example.com"]
   }
 }
 ```
+
+`approvers` lists who may release a merge the gate holds (money, auth, schema, big diffs) by
+replying `done`; leave it empty and a person merges held PRs in Azure DevOps instead.
 
 The PAT needs **Work Items: Read & write** and **Code: Read & write**, and its owner must be a
 team administrator to set up the board columns. The Agile, Scrum and Basic processes are

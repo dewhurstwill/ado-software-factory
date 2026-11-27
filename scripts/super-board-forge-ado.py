@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import json
 import os
 import re
@@ -54,6 +55,14 @@ def bind(module):
 # ---- small pure helpers -------------------------------------------------------
 def q(text):
     return urllib.parse.quote(str(text), safe='')
+
+
+def plain(text):
+    """Undo the service's storage encoding of Markdown long text. Seen live: a work item body or
+    comment written as `"x" & 🙋` reads back `&quot;x&quot; &amp; &#128587;` (`&`, `"` and
+    characters outside the BMP become entities; titles are not touched). One unescape is the
+    exact inverse: a literal `&amp;` in the source is stored as `&amp;amp;`."""
+    return html.unescape(text) if isinstance(text, str) else text
 
 
 def tags_of(value):
@@ -273,6 +282,7 @@ class AdoVerbs:
         super().__init__(config, repo)
         self._auth = None
         self._me = None
+        self._me_unique = ''
         self._cache = None
         repo_path = (config.get('repo') or {}).get('path')
         if repo_path:
@@ -598,7 +608,34 @@ class AdoVerbs:
             user = value['authenticatedUser']
             account = ((user.get('properties') or {}).get('Account') or {}).get('$value')
             self._me = {'login': account or user.get('providerDisplayName') or user['id'], 'id': user['id']}
+            self._me_unique = account if isinstance(account, str) else ''
         return self._me
+
+    def whoami_unique(self):
+        """The token's unique name (connectionData Account), or '' when the service gave none:
+        never the display name, which approval must not trust."""
+        self.whoami()
+        return self._me_unique
+
+    # ---- human approval ------------------------------------------------------------------------
+    def approvers(self):
+        """config ado.approvers: unique names allowed to approve a held merge by commenting `done`,
+        compared case-insensitively. Absent or empty: nobody."""
+        value = self.ado.get('approvers')
+        if value is None:
+            return set()
+        if not isinstance(value, list) or not all(isinstance(v, str) and v.strip() for v in value):
+            raise forge.ForgeError('config ado.approvers must be a list of unique names (e.g. "user@example.com")',
+                                   forge.EXIT_CONFIG)
+        return {v.strip().casefold() for v in value}
+
+    def may_approve(self, login):
+        return isinstance(login, str) and bool(login.strip()) and login.strip().casefold() in self.approvers()
+
+    def permission_verb(self, argv):
+        p = forge.parser('permission <login>'); p.add_argument('login')
+        login = p.parse_args(argv).login
+        print(json.dumps({'permission': 'approve' if self.may_approve(login) else 'none'}))
 
     # ---- work items --------------------------------------------------------------------------------
     def get_item(self, n, fields):
@@ -641,7 +678,7 @@ class AdoVerbs:
         if closed:
             reason = 'NOT_PLANNED' if cat == 'Removed' or has_tag(tags, TAG_NOT_PLANNED) else 'COMPLETED'
         return {'number': wi['id'], 'title': f.get('System.Title') or '',
-                'body': f.get(self.body_field(typ)) or f.get(DEFAULT_BODY_FIELD) or '',
+                'body': plain(f.get(self.body_field(typ)) or f.get(DEFAULT_BODY_FIELD) or ''),
                 'state': 'CLOSED' if closed else 'OPEN', 'stateReason': reason,
                 'labels': [{'name': t} for t in visible_tags(tags)],
                 'assignees': [{'login': self.whoami()['login']}] if claim_tags(tags) else [],
@@ -857,7 +894,7 @@ class AdoVerbs:
             comments = self.list_comments(t['number'])[-8:]
             out.append({'number': t['number'], 'title': t['title'], 'body': t['body'], 'state': 'OPEN',
                         'labels': {'nodes': t['labels']},
-                        'comments': {'nodes': [{'body': c['text']} for c in comments]}})
+                        'comments': {'nodes': [{'body': plain(c['text'])} for c in comments]}})
         out.sort(key=lambda t: t['number'])
         print(json.dumps(out))
 
@@ -1007,7 +1044,9 @@ class AdoVerbs:
         tail = f'/{comment}' if comment else ''
         return f'{self.proj_api}/wit/workItems/{n}/comments{tail}?{extra}api-version={API_COMMENTS}'
 
-    def list_comments(self, n):
+    def list_comments(self, n, strict=False):
+        """Every comment, oldest first. strict (human approval): a continuation token that repeats
+        means the listing is incomplete, so raise rather than return the pages read so far."""
         out, token, seen = [], None, set()
         while True:
             extra = '$top=200&order=asc&' + (f'continuationToken={q(token)}&' if token else '')
@@ -1015,9 +1054,24 @@ class AdoVerbs:
                               what=f'comments of #{n}')
             out += value['comments']
             token = value.get('continuationToken')
+            if token and token in seen and strict:
+                raise ValueError(f'comments of #{n}: the continuation token repeated; the listing is incomplete')
             if not token or token in seen:
                 return out
             seen.add(token)
+
+    def ticket_comment_rows(self, n, strict=False):
+        """The `ticket comments` rows plus what approval needs: `uniqueName` (the author's unique
+        name, never the display name) and `version` (1 = never edited)."""
+        rows = []
+        for c in self.list_comments(n, strict):
+            by = c['createdBy']
+            rows.append({'id': c['id'], 'body': plain(c['text']),
+                         'user': {'login': by.get('uniqueName') or by.get('displayName') or '', 'type': 'User'},
+                         'created_at': c.get('createdDate') or '',
+                         'updated_at': c.get('modifiedDate') or c.get('createdDate') or '',
+                         'version': c.get('version'), 'uniqueName': by.get('uniqueName') or ''})
+        return rows
 
     def ticket_comment(self, argv):
         p = forge.parser('ticket comment <N> --body-file F'); p.add_argument('number', type=forge.positive)
@@ -1032,10 +1086,7 @@ class AdoVerbs:
     def ticket_comments(self, argv):
         p = forge.parser('ticket comments <N>'); p.add_argument('number', type=forge.positive)
         n = p.parse_args(argv).number
-        page = [{'id': c['id'], 'body': c['text'],
-                 'user': {'login': c['createdBy'].get('uniqueName') or c['createdBy'].get('displayName') or '', 'type': 'User'},
-                 'created_at': c.get('createdDate') or '', 'updated_at': c.get('modifiedDate') or c.get('createdDate') or ''}
-                for c in self.list_comments(n)]
+        page = [{k: v for k, v in row.items() if k != 'uniqueName'} for row in self.ticket_comment_rows(n)]
         print(json.dumps([page]))
 
     def ticket_comment_edit(self, argv):

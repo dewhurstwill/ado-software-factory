@@ -169,6 +169,12 @@ write the human's `done` response. The final approval check is a fresh snapshot;
 GitHub atomically protects the head at merge, but does not lock issue comments.
 A human can still merge a PR manually under the repository's normal rules.
 
+**Azure DevOps.** The request goes on the work item the PR links (its work item link, from
+`pr create --closes`), else in a PR thread; `done` must be in the same place. Every marker the
+check reads (`Reason tag: 🙋`, `approval-request:`) is visible text, so it survives work items,
+which strip `<!-- -->` comments. Who may answer is config `ado.approvers` (providers.md, "Human
+approval"), not repository permission; with no list a person merges the PR in Azure DevOps.
+
 ## Hard rule
 
 **The bot is forbidden from moving any card to Blocked, or dropping it to Done, *without* this full template populated. A 1-line "needs creds" comment is a contract violation and fails Reviewer's thread gate.**

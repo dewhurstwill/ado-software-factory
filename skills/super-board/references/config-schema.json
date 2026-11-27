@@ -37,7 +37,13 @@
     "work_item_types": { "feature": "User Story", "bug": "Bug", "qa": "User Story" },
     // Field holding the ticket body, per work item type. Default System.Description, except
     // Bug: Microsoft.VSTS.TCM.ReproSteps (shown below). An explicit value, even {}, replaces it.
-    "body_fields": { "Bug": "Microsoft.VSTS.TCM.ReproSteps" }
+    "body_fields": { "Bug": "Microsoft.VSTS.TCM.ReproSteps" },
+    // Who may approve a held merge (gate exit 7/8) by commenting `done` after its pinned request:
+    // unique names (the sign-in email), compared case-insensitively with the comment author's.
+    // Absent or [] = nobody; a person merges held PRs in Azure DevOps. A list in this committed
+    // config keeps who may release a held merge reviewable and needs no Graph token scope. The
+    // token's own identity approves only when listed here (a solo owner). references/providers.md.
+    "approvers": ["user@example.com"]
   },
 
   "project": {

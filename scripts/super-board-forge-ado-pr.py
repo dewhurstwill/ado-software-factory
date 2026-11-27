@@ -540,10 +540,13 @@ class AdoPrVerbs:
         thread, comment = self.post_thread(a.number, Path(a.body_file).read_text(encoding='utf-8'))
         print(f'{thread}.{comment}')
 
-    def pr_comments(self, argv):
-        p = forge.parser('pr comments <N>'); p.add_argument('number', type=forge.positive)
+    def pr_comment_rows(self, n):
+        """The `pr comments` rows plus what approval needs: `uniqueName` (never the display name),
+        `inline` (the thread is anchored to a file, like a GitHub review comment) and
+        `contentUpdated` (lastContentUpdatedDate, else lastUpdatedDate, else ''). `updated_at` is the
+        content edit time: lastUpdatedDate also moves for things that are not an edit of the text."""
         rows = []
-        for thread in self.get_threads(p.parse_args(argv).number):
+        for thread in self.get_threads(n):
             first = next((c for c in thread['comments'] if not c.get('isDeleted')), None)
             if first is not None and not is_system(first) and comment_text(first).startswith(OVERFLOW_MARK):
                 continue
@@ -551,13 +554,22 @@ class AdoPrVerbs:
                 if not live(c):
                     continue
                 author = c.get('author') or {}
+                content = c.get('lastContentUpdatedDate') or c.get('lastUpdatedDate') or ''
                 rows.append((c.get('publishedDate') or '', thread['id'], c['id'],
                              {'id': f'{thread["id"]}.{c["id"]}', 'body': comment_text(c),
                               'user': {'login': author.get('uniqueName') or author.get('displayName') or '', 'type': 'User'},
                               'created_at': c.get('publishedDate') or '',
-                              'updated_at': c.get('lastUpdatedDate') or c.get('publishedDate') or ''}))
+                              'updated_at': content or c.get('publishedDate') or '',
+                              'uniqueName': author.get('uniqueName') or '',
+                              'inline': bool(thread.get('threadContext')), 'contentUpdated': content}))
         rows.sort(key=lambda r: r[:3])
-        print(json.dumps([[r[3] for r in rows]]))
+        return [r[3] for r in rows]
+
+    def pr_comments(self, argv):
+        p = forge.parser('pr comments <N>'); p.add_argument('number', type=forge.positive)
+        private = ('uniqueName', 'inline', 'contentUpdated')
+        rows = self.pr_comment_rows(p.parse_args(argv).number)
+        print(json.dumps([[{k: v for k, v in r.items() if k not in private} for r in rows]]))
 
     def pr_comment_edit(self, argv):
         p = forge.parser('pr comment-edit <N> <threadId>.<commentId> --body-file F')
@@ -570,9 +582,21 @@ class AdoPrVerbs:
         self.edit_comment(a.number, found[1], found[2], Path(a.body_file).read_text(encoding='utf-8'))
         print(a.comment)
 
-    def pr_links(self, argv):
-        p = forge.parser('pr links <N>'); p.add_argument('number', type=forge.positive)
-        n = p.parse_args(argv).number
+    def linked_work_items(self, n):
         value = self.read('GET', self.pr_api(n, '/workitems'), validate=v_workitems, fixed=False,
                           what=f'work items of pull request #{n}')
-        print(json.dumps({'closes': sorted({int(w['id']) for w in value['value']})}))
+        return sorted({int(w['id']) for w in value['value']})
+
+    def pr_links(self, argv):
+        p = forge.parser('pr links <N>'); p.add_argument('number', type=forge.positive)
+        print(json.dumps({'closes': self.linked_work_items(p.parse_args(argv).number)}))
+
+    def approval_snapshot(self, n):
+        """{state, headRefOid, closes}: the PR, then the service's own work item links (no text parsing,
+        whatever the target branch)."""
+        pr = self.get_pr(n)
+        return {'state': STATE_OF[pr['status']], 'headRefOid': self.head_of(pr), 'closes': self.linked_work_items(n)}
+
+    def pr_approval(self, argv):
+        p = forge.parser('pr approval <N>'); p.add_argument('number', type=forge.positive)
+        print(json.dumps(self.approval_snapshot(int(p.parse_args(argv).number))))

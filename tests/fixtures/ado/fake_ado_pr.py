@@ -68,19 +68,31 @@ class PrStore:
         self.heads[pr['sourceRefName'][len('refs/heads/'):]] = new_head
         pr['lastMergeSourceCommit'] = {'commitId': new_head}
 
-    def add_thread(self, n, comments, status='active'):
-        t = {'id': self.next_thread, 'status': status, 'comments': []}
+    def add_thread(self, n, comments, status='active', context=None):
+        """context: a file anchor ({'filePath': ...}), as an inline review thread carries."""
+        t = {'id': self.next_thread, 'status': status, 'comments': [], 'threadContext': context}
         self.next_thread += 1
         for i, c in enumerate(comments, 1):
-            c = dict(c)
-            c.setdefault('id', i)
-            c.setdefault('author', self.user)
-            c.setdefault('commentType', 'text')
-            c.setdefault('publishedDate', self.tick())
-            c.setdefault('lastUpdatedDate', c['publishedDate'])
-            t['comments'].append(c)
+            t['comments'].append(self.stamp(c, i))
         self.threads[n].append(t)
         return t
+
+    def stamp(self, c, i):
+        c = dict(c)
+        c.setdefault('id', i)
+        c.setdefault('author', self.user)
+        c.setdefault('commentType', 'text')
+        c.setdefault('publishedDate', self.tick())
+        c.setdefault('lastUpdatedDate', c['publishedDate'])
+        c.setdefault('lastContentUpdatedDate', c['publishedDate'])
+        return c
+
+    def reply(self, n, thread_id, comment):
+        """A reply in an existing thread (the web UI's Reply)."""
+        thread = next(t for t in self.threads[n] if t['id'] == thread_id)
+        c = self.stamp(comment, max([x['id'] for x in thread['comments']] or [0]) + 1)
+        thread['comments'].append(c)
+        return c
 
     # ---- model ------------------------------------------------------------------------------------
     def render(self, pr, labels=False):
@@ -154,7 +166,7 @@ class PrStore:
             if comment is None:
                 return 404, {}, {'message': 'comment not found'}
             comment['content'] = req['body']['content']
-            comment['lastUpdatedDate'] = self.tick()
+            comment['lastUpdatedDate'] = comment['lastContentUpdatedDate'] = self.tick()
             return 200, {}, copy.deepcopy(comment)
         return 404, {}, {'message': f'no route {m} {req["path"]}'}
 

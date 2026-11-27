@@ -36,6 +36,12 @@ Verbs                                   stdout
   ticket graph                          [issue node, ...] for every open issue (labels and
                                         comments nested as {nodes: [...]})
   board <verb> ...                      reserved for super-board-card.sh's verbs
+Human approval (super-board-approval.py; both providers):
+  pr approval <N>                       {state, headRefOid, closes: [tickets the PR really links]}
+  ticket comments <N>                   [[{id,body,user:{login,type},created_at,updated_at}]] (GitHub: the
+                                        issue/PR conversation; Azure DevOps adds `version`)
+  permission <login>                    {permission}: GitHub's collaborator permission; Azure DevOps
+                                        "approve" for a config `ado.approvers` entry, else "none" (no call)
 Azure DevOps only (super-board-forge-ado-pr.py), new verbs; the GitHub backend leaves them unimplemented (69):
   pr create --base B --head H --title T --body-file F [--draft] [--label L]... [--closes <ticket>]...
                                         URL, then the number on the last line
@@ -51,7 +57,8 @@ body puts it back (exit 65 if still too long); merge pins the head, completes, t
 Azure DevOps tracker verbs (super-board-forge-ado.py; shapes in providers.md): board ids|items|
 status|item-id|move|ensure [--check]; ticket view|list|graph|history|create|edit|close|comment|
 comments|comment-edit|claim|release [--force]; whoami; quota. Tags: `add` merges, `replace` sets;
-claims are per-holder tags `sb:claimed-<6hex>` verified after the add (see providers.md). The GitHub backend leaves these unimplemented (69).
+claims are per-holder tags `sb:claimed-<6hex>` verified after the add (see providers.md). The GitHub backend leaves these unimplemented (69),
+except `ticket comments` (above).
 
 Exit codes: 0 ok · 3 not found (card/column/pull request) · 4 already claimed · 64 usage, or a malformed read (the read helper's) · 66 config
 unreadable or unknown provider · 65 refused (board ensure) · 69 provider or verb unavailable · 79 required
@@ -93,6 +100,20 @@ DEPS_QUERY = '''
         }
       }
     }'''
+
+# Human approval's one PR read (super-board-approval.py): head, state, base, body and closing links
+# in one paginated snapshot. Paginate the links too: an omitted newer request must never make an
+# older approval authoritative.
+APPROVAL_QUERY = '''query($owner:String!,$repo:String!,$pr:Int!,$endCursor:String){
+          repository(owner:$owner,name:$repo){defaultBranchRef{name}
+            pullRequest(number:$pr){headRefOid state baseRefName body
+            closingIssuesReferences(first:100,after:$endCursor){
+              pageInfo{hasNextPage endCursor} nodes{number repository{nameWithOwner}}
+            }}}}'''
+# GitHub's closing keywords: KEYWORD[:] #N or KEYWORD[:] owner/repo#N.
+CLOSES = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?):?\s+([\w.-]+/[\w.-]+)?#(\d+)\b", re.I)
+GITHUB_LOGIN = re.compile(r'[A-Za-z0-9_-]+(?:\[bot\])?')
+SHA40 = re.compile(r'[0-9a-f]{40}\Z')
 
 PR_LIST_FIELDS = {
     'open': 'number,title,body,url,headRefName,files',
@@ -169,6 +190,8 @@ class Backend:
     def ticket_comment(self, argv): self.unavailable('ticket comment')
     def ticket_comments(self, argv): self.unavailable('ticket comments')
     def ticket_comment_edit(self, argv): self.unavailable('ticket comment-edit')
+    def pr_approval(self, argv): self.unavailable('pr approval')
+    def permission_verb(self, argv): self.unavailable('permission')
     def ticket_claim(self, argv): self.unavailable('ticket claim')
     def ticket_release(self, argv): self.unavailable('ticket release')
     def whoami_verb(self, argv): self.unavailable('whoami')
@@ -333,6 +356,84 @@ class GitHubBackend(Backend):
                                       '-F', f'owner={owner}', '-F', f'repo={name}'], 'issues'))
         print(json.dumps([n for page in pages for n in page['data']['repository']['issues']['nodes']]))
 
+    # ---- human approval (super-board-approval.py) ---------------------------
+    # The argv builders and the snapshot parser are shared with super-board-approval.py,
+    # which runs the same commands through the same read helper and kinds.
+    @staticmethod
+    def approval_argv(repo, n):
+        owner, name = repo.split('/')
+        return ['api', 'graphql', '--paginate', '--slurp', '-f', f'query={APPROVAL_QUERY}',
+                '-F', f'owner={owner}', '-F', f'repo={name}', '-F', f'pr={n}']
+
+    @staticmethod
+    def comments_argv(repo, n):
+        return ['api', '--paginate', '--slurp', f'repos/{repo}/issues/{n}/comments?per_page=100']
+
+    @staticmethod
+    def permission_argv(repo, login):
+        return ['api', f'repos/{repo}/collaborators/{login}/permission']
+
+    @staticmethod
+    def body_links(body, repo):
+        """Same-repo issues a PR body closes; other-repo references are ignored."""
+        return {int(n) for other, n in CLOSES.findall(body) if not other or other.lower() == repo}
+
+    @classmethod
+    def approval_snapshot(cls, pages, repo):
+        """{state, headRefOid, closes} from the approval pages; repo is lower-case owner/name.
+        GitHub fills closingIssuesReferences only for PRs into the default branch, so a PR into
+        another base takes its body's closing keywords, read in this same head-pinned snapshot.
+        Remote-repository links are ignored. ValueError when incomplete or changing."""
+        snapshots, issues = set(), set()
+        if not isinstance(pages, list) or not pages:
+            raise ValueError('unreadable PR')
+        for page in pages:
+            if page.get('errors'):
+                raise ValueError('incomplete PR response')
+            repository = page['data']['repository']
+            pr = repository['pullRequest']
+            snapshots.add((pr['state'], pr['headRefOid'], pr['baseRefName'], pr['body'],
+                           (repository['defaultBranchRef'] or {}).get('name')))
+            links = pr['closingIssuesReferences']
+            for issue in links['nodes']:
+                if issue['repository']['nameWithOwner'].lower() == repo:
+                    issues.add(issue['number'])
+        if links['pageInfo']['hasNextPage'] or len(snapshots) != 1:
+            raise ValueError('PR changed or issue links are incomplete')
+        state, head, base, body, default = snapshots.pop()
+        if not all(isinstance(v, str) for v in (state, head, base, body, default)) or not SHA40.fullmatch(head):
+            raise ValueError('unreadable PR head, base or body')
+        if base != default:
+            issues |= cls.body_links(body, repo)
+        return {'state': state, 'headRefOid': head, 'closes': sorted(issues)}
+
+    def owner_name(self, verb):
+        repo = self.resolve_repo()
+        if not re.fullmatch(r'[^/\s]+/[^/\s]+', repo):
+            raise Usage(f'{verb} needs a repo (--repo, config repo.remote, or an origin remote)')
+        return repo.lower()
+
+    def pr_approval(self, argv):
+        p = parser('pr approval <N>'); p.add_argument('number', type=positive)
+        n = p.parse_args(argv).number
+        repo = self.owner_name('pr approval')
+        pages = json.loads(self.read(self.approval_argv(repo, n), 'approval'))
+        print(json.dumps(self.approval_snapshot(pages, repo)))
+
+    def ticket_comments(self, argv):
+        p = parser('ticket comments <N>'); p.add_argument('number', type=positive)
+        n = p.parse_args(argv).number
+        self.emit(self.comments_argv(self.owner_name('ticket comments'), n), 'comments')
+
+    def permission_verb(self, argv):
+        p = parser('permission <login>'); p.add_argument('login')
+        login = p.parse_args(argv).login
+        if not GITHUB_LOGIN.fullmatch(login):
+            print(json.dumps({'permission': None}))
+            return
+        value = json.loads(self.read(self.permission_argv(self.owner_name('permission'), login), 'permission'))
+        print(json.dumps({'permission': value.get('permission')}))
+
     def board(self, argv):
         raise Unavailable('github provider: board verbs are served by super-board-card.sh')
 
@@ -357,6 +458,8 @@ DISPATCH = {
     ('pr', 'comments'): 'pr_comments',
     ('pr', 'comment-edit'): 'pr_comment_edit',
     ('pr', 'links'): 'pr_links',
+    ('pr', 'approval'): 'pr_approval',
+    ('permission',): 'permission_verb',
     ('ticket', 'view'): 'ticket_view',
     ('ticket', 'list'): 'ticket_list',
     ('ticket', 'graph'): 'ticket_graph',

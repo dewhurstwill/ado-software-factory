@@ -177,14 +177,16 @@ class GateTests(ScriptCase):
         self.assertIn('Azure DevOps has not confirmed a merge', self.halt.read_text(encoding='utf-8'))
         self.assertEqual(len(self.requests('PATCH', r'/pullrequests/1$')), 1, 'never retried')
 
-    def test_human_policy_fails_safe_without_approval(self):
+    def test_human_policy_holds_and_prints_a_pinned_request(self):
+        # Approval is read through the forge (tests/test_approval_ado.py); with no request yet the gate holds.
         self.config_value['merge_policy'] = {'default': 'human'}
         r = self.gate('--expect-head', self.head)
         self.assertEqual(r.returncode, 7, r.stderr)
         self.assertIn('human-gate:', r.stdout)
-        self.assertIn('not available on Azure DevOps', r.stderr)
+        request = json.loads(next(l for l in r.stdout.splitlines() if l.startswith('approval-request: '))[18:])
+        self.assertEqual((request['repo'], request['pr'], request['head']), ('example/factory/factory', self.n, self.head))
         self.assertEqual(self.requests('PATCH', r'.'), [])
-        self.assertFalse(self.halt.exists(), 'no halt: approval is skipped, not attempted through gh')
+        self.assertFalse(self.halt.exists())
         self.no_gh_calls()
 
 

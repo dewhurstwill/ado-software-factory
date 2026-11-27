@@ -391,6 +391,25 @@ class TicketTests(AdoCase):
         github_read.validate(json.dumps(view), 'issue')
         self.assertEqual(self.forge('ticket', 'view', '999').returncode, 3)
 
+    def test_entity_encoded_text_reads_back_as_written(self):
+        # The live service returns Markdown bodies and comments with `&`, `"` and non-BMP
+        # characters as HTML entities; the fake does the same. Every read must undo it, or the
+        # `Reason tag: … 🙋` and `approval-request: {"head":…}` lines never match again.
+        text = '## Problem\nQuote "x" & <b>tag</b> \U0001F64B emoji \u2014 dash, `code "q"`, literal &amp;.\n\n## Blocked by\n- None.\n'
+        n = self.fake.add('User Story', '\U0001F64B "title" & <chars>', text, 'feature', 'Ready')
+        raw = self.fake.render(self.fake.items[n])['fields']['System.Description']
+        self.assertIn('&quot;x&quot; &amp; <b>tag</b> &#128587;', raw)
+        view = self.js('ticket', 'view', str(n))
+        self.assertEqual(view['body'], text)
+        self.assertEqual(view['title'], '\U0001F64B "title" & <chars>')
+        note = 'Reason tag: \U0001F64B needs you\n\napproval-request: {"head":"abc","pr":5}\n'
+        self.ok('ticket', 'comment', str(n), '--body-file', self.body_file(note))
+        self.assertEqual(self.js('ticket', 'comments', str(n))[0][0]['body'], note)
+        graph = {t['number']: t for t in self.js('ticket', 'graph')}
+        self.assertEqual(graph[n]['body'], text)
+        self.assertEqual(graph[n]['comments']['nodes'][0]['body'], note)
+        self.assertEqual({t['number']: t for t in self.js('ticket', 'history')}[n]['body'], text)
+
     def test_close_reasons(self):
         a = self.fake.add('User Story', 'a')
         b = self.fake.add('User Story', 'b')
