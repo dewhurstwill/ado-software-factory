@@ -190,4 +190,34 @@ git -C "$G" checkout -q -b feat; echo more >> "$G/skills/a/SKILL.md"; git -C "$G
 gate 2 "local branch with no upstream: commits since main count"
 rm -rf "$G" "$G.origin" "$G.err"
 
+# ---- the wired commands themselves ---------------------------------------------
+# Claude Code runs each settings `command` with `sh -c` (Git Bash on Windows), with
+# CLAUDE_PROJECT_DIR in the OS's own path form and none of this suite's shims. Every
+# command in both snippets must start its guard there and answer.
+W=$(mktemp -d); mkdir -p "$W/proj/.claude/hooks"
+cp "$H"/*.py "$W/proj/.claude/hooks/"
+git init -q "$W/proj"
+WPROJ=$(sb_native "$W/proj")
+wired() {  # $1 command, $2 payload → stdout; fails the suite on a non-zero exit or stderr
+  local out err rc=0
+  out=$(printf '%s' "$2" | CLAUDE_PROJECT_DIR="$WPROJ" bash --norc -c 'unset -f python3 jq; eval "$1"' _ "$1" 2>"$W/err") || rc=$?
+  err=$(cat "$W/err")
+  [ "$rc" -eq 0 ] && [ -z "$err" ] || fail "wired hook did not run cleanly (exit $rc): $1 :: $err"
+  printf '%s' "$out"
+}
+n=0
+while IFS= read -r cmd; do
+  case "$cmd" in *cleanup-wt.py*) continue ;; esac  # SessionStart; exercised by test-cleanup-wt.sh
+  out=$(wired "$cmd" "$(bash_cmd 'git status' "$WPROJ")")
+  [ -z "$out" ] || fail "wired hook denied a harmless command: $cmd :: $out"
+  n=$((n + 1)); PASS=$((PASS + 1))
+done < <(jq -r '.hooks[][].hooks[].command' ../hooks/settings-snippet.json ../hooks/settings-protect-main.json)
+[ "$n" -ge 5 ] || fail "expected the five PreToolUse/PostToolUse guard commands, ran $n"
+DEL=$(jq -r '.hooks.PreToolUse[].hooks[].command | select(contains("guard-delete-outside"))' ../hooks/settings-snippet.json)
+out=$(wired "$DEL" "$(bash_cmd 'rm -rf ~' "$WPROJ")")
+printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null \
+  || fail "the wired delete guard must deny rm -rf ~, got '$out'"
+PASS=$((PASS + 1))
+rm -rf "$W"
+
 echo "PASS: test-guard-hooks.sh ($PASS cases)"

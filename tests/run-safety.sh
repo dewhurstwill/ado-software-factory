@@ -27,10 +27,12 @@ kill_tree() {
   local pid="$1" tree p w
   if [ -n "${SB_WINDOWS:-}" ]; then
     # MSYS ps: PID PPID PGID WINPID … (a status letter may lead). Walk PPID links from
-    # the suite down, then end each process by MSYS PID and by Windows PID.
+    # the suite down, plus everything in the suite's process group (set -m below), then
+    # end each process by MSYS PID and by Windows PID.
     tree=$(ps 2>/dev/null | awk -v root="$pid" '
-      NR > 1 { if ($1 !~ /^[0-9]+$/) { $1 = ""; $0 = $0 } ; pp[$1] = $2; wp[$1] = $4 }
+      NR > 1 { if ($1 !~ /^[0-9]+$/) { $1 = ""; $0 = $0 } ; pp[$1] = $2; pg[$1] = $3; wp[$1] = $4 }
       END { keep[root] = 1; changed = 1
+            for (p in pg) if (pg[p] == root) keep[p] = 1
             while (changed) { changed = 0
               for (p in pp) if (!(p in keep) && (pp[p] in keep)) { keep[p] = 1; changed = 1 } }
             for (p in keep) print p, wp[p] }')

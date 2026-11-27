@@ -117,9 +117,32 @@ Verb contract, mapping and the service behaviour this relies on:
 |---|---|---|
 | macOS | bash 3.2+ | Every offline suite runs in CI |
 | Linux | bash | Every offline suite runs in CI |
-| Windows | Git Bash (the shell Claude Code uses on Windows) | CI job added and advisory; not yet green |
+| Windows | Git Bash (the shell Claude Code uses on Windows) | Every offline suite runs in CI (advisory job) |
 
-Windows needs Git for Windows, Python 3.9+, `jq` and Node.js on `PATH`. WSL counts as Linux.
+WSL counts as Linux. On native Windows, before `install.sh`:
+
+1. Install [Git for Windows](https://git-scm.com/downloads/win). Claude Code runs its Bash tool and every
+   hook command in Git Bash; without it there is no Bash tool and the guard hooks never fire. If Claude Code
+   cannot find it, set `CLAUDE_CODE_GIT_BASH_PATH` (for example `C:\Program Files\Git\bin\bash.exe`) in the
+   `env` block of your settings.
+2. Install Python 3.9+ and make the bare name `python3` start it in Git Bash: the guard hooks and the skills
+   call `python3`. A python.org install has only `python` and `py`, and the Microsoft Store stub that answers
+   to `python3` just prints a hint. Turn off the `python3` App execution alias (Settings → Apps → Advanced app
+   settings), then copy `python.exe` to `python3.exe` in the same folder, or install Python with the Python
+   install manager, which adds `python3`. Check: `python3 --version` in Git Bash. `install.sh` warns when it fails.
+3. Put `jq`, Node.js and `gh` (GitHub) or `az` (Azure DevOps) on `PATH`, then run `gh auth login` / `az login`.
+4. Run the pack's scripts from Git Bash (`bash install.sh …`), not PowerShell or CMD.
+5. Turn on Developer Mode (Settings → System → For developers) or run Git Bash as administrator once for
+   `install.sh`: the per-host links are real symlinks, and without the right to make them it copies the files
+   and says so.
+6. The guard hooks match Claude Code's Bash, Read, Edit and Write tools. Commands Claude runs through the
+   PowerShell tool (on by default for claude.ai and Console accounts when Git Bash is installed) are not
+   checked by them. To keep every shell command behind the guards, set `CLAUDE_CODE_USE_POWERSHELL_TOOL` to
+   `0` in the `env` block of the project's `.claude/settings.json`.
+7. Long paths: worktrees live under `.claude/worktrees/`. Keep the project path short or enable Windows long
+   paths and `git config --global core.longpaths true`.
+8. Use the default `worker_backend: "workflow"`. The legacy `claude-p` runner works, but a stop there ends
+   workers at once (Windows has no SIGTERM for another process), so a worker gets no chance to clean up.
 
 ### Security
 

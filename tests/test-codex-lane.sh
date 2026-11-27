@@ -248,10 +248,23 @@ JOB=$!
 for _ in {1..100}; do [ -s "$T/descendant.pid" ] && break; sleep 0.05; done
 [ -s "$T/descendant.pid" ] || fail 'stub did not start'
 WAVE_PID=$(cat .claude/super-board/codex-wave.pid)
-kill -TERM "$WAVE_PID"
-RC=0; wait "$JOB" || RC=$?
-[ "$RC" -eq 79 ] || fail 'interrupted wave must halt'
 DESCENDANT=$(cat "$T/descendant.pid")
-! kill -0 "$DESCENDANT" 2>/dev/null || fail 'descendant survived wave cancellation'
-[ ! -e .claude/super-board/codex-wave.pid ] && [ -z "$(ls -A .claude/super-board/inflight)" ] || fail 'interrupted wave leaves no live locks'
+if [ -z "${SB_WINDOWS:-}" ]; then
+  kill -TERM "$WAVE_PID"
+  RC=0; wait "$JOB" || RC=$?
+  [ "$RC" -eq 79 ] || fail 'interrupted wave must halt'
+  ! kill -0 "$DESCENDANT" 2>/dev/null || fail 'descendant survived wave cancellation'
+  [ ! -e .claude/super-board/codex-wave.pid ] && [ -z "$(ls -A .claude/super-board/inflight)" ] || fail 'interrupted wave leaves no live locks'
+else
+  # Windows has no SIGTERM for another process, so the wave's TERM handler cannot run:
+  # super-board-stop.sh ends the wave's process tree instead (and then clears its locks,
+  # covered by test-codex-stop.sh). Both PIDs here are Windows PIDs the wave's Python wrote.
+  win_alive() { tasklist //FI "PID eq $1" //FO CSV //NH 2>/dev/null | grep -q "\"$1\""; }
+  win_alive "$WAVE_PID" || fail 'the wave marker does not name the running wave'
+  win_alive "$DESCENDANT" || fail 'the stub descendant is not running'
+  taskkill //PID "$WAVE_PID" //T //F >/dev/null 2>&1 || fail 'taskkill could not end the wave'
+  wait "$JOB" || true
+  for _ in {1..50}; do win_alive "$DESCENDANT" || break; sleep 0.2; done
+  ! win_alive "$DESCENDANT" || fail 'descendant survived wave cancellation'
+fi
 echo "PASS: test-codex-lane.sh [$SB_LANE_ENTRY] (model/ladders/router/review/sandbox/results/wave/halt/cancellation)"

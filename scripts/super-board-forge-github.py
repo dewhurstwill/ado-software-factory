@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -156,7 +155,7 @@ class GhVerbs:
         sys.stdout.flush()
         data = json.dumps(payload, ensure_ascii=False).encode('utf-8') if payload is not None else None
         try:
-            r = subprocess.run([shutil.which('gh') or 'gh', *argv], input=data, capture_output=True)
+            r = forge.github_read.compat.run(['gh', *argv], input=data, capture_output=True)
         except OSError as error:
             raise forge.ForgeError(f'gh could not run: {error}', EXIT_FAILED)
         return r.returncode, r.stdout.decode('utf-8', 'replace'), r.stderr.decode('utf-8', 'replace')
@@ -224,8 +223,8 @@ class GhVerbs:
         resources = json.loads(self.read(['api', 'rate_limit'], 'quota'))['resources']
         rate = {b: {k: resources[b].get(k) for k in ('limit', 'remaining', 'used', 'reset')} for b in ('graphql', 'core')}
         try:
-            r = subprocess.run([shutil.which('gh') or 'gh', 'api', 'graphql', '-f', f'query={RATE_QUERY}'],
-                               capture_output=True, timeout=30)
+            r = forge.github_read.compat.run(['gh', 'api', 'graphql', '-f', f'query={RATE_QUERY}'],
+                                             capture_output=True, timeout=30)
             node = json.loads(r.stdout.decode('utf-8', 'replace'))['data']['rateLimit'] if r.returncode == 0 else None
             reset = forge.forge_ado_pr.parse_time(node['resetAt']) if node else None
             if node and reset:
@@ -239,7 +238,8 @@ class GhVerbs:
     # ---- boards (super-board-card.sh is the cheap board CLI) --------------------------------------------
     def card_argv(self):
         project = self.config.get('project') or {}
-        argv = [shutil.which('bash') or 'bash', str(HERE / 'super-board-card.sh')]
+        # Git Bash on Windows (a bare 'bash' there can be System32's WSL bash.exe).
+        argv = [*(forge.github_read.compat.resolve('bash') or ['bash']), str(HERE / 'super-board-card.sh')]
         for flag, value in (('--owner', project.get('owner')), ('--number', project.get('number')),
                             ('--repo', self.explicit_repo())):
             if value not in (None, ''):
@@ -250,7 +250,8 @@ class GhVerbs:
         # The forge consumed the config (it may be a FIFO): hand the card script flags, never SB_CONFIG.
         env = {k: v for k, v in os.environ.items() if k != 'SB_CONFIG'}
         sys.stdout.flush()
-        return subprocess.run([*self.card_argv(), *args], env=env, capture_output=capture, text=capture,
+        return subprocess.run(forge.github_read.compat.command_line([*self.card_argv(), *args]), env=env,
+                              capture_output=capture, text=capture,
                               encoding='utf-8' if capture else None)
 
     def board(self, argv):

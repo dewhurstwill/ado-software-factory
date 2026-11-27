@@ -127,7 +127,8 @@ class DispatchTests(Gaps):
         bindir = self.proj / '.claude/bin'
         bindir.mkdir(parents=True, exist_ok=True)
         for name in ('super-board-github-read.py', 'super-board-skills-ready.py', 'super-board-forge.py',
-                     'super-board-forge-ado.py', 'super-board-forge-ado-pr.py', 'super-board-forge-github.py'):
+                     'super-board-forge-ado.py', 'super-board-forge-ado-pr.py', 'super-board-forge-github.py',
+                     'super-board-compat.py'):  # install.sh ships it beside them; it finds gh/az on Windows
             shutil.copy2(ROOT / 'scripts' / name, bindir / name)
         self.home = self.root / 'home'
         self.home.mkdir()

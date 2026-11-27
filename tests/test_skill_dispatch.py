@@ -159,11 +159,29 @@ dispatch_lane build 1
 
     def test_legacy_halt_stops_owned_worker_preserves_unrelated_and_evidence(self):
         self.full('claude')
+        # Windows: the owned worker's PID (os.getpid) is a Windows PID, and Windows has no
+        # SIGTERM for another process: the runner's kill ends the worker at once, so its
+        # TERM handler never runs. There the proof is that the worker process is gone.
+        def win_alive(pid):
+            out = subprocess.run(['tasklist', '/FI', f'PID eq {pid}', '/FO', 'CSV', '/NH'],
+                                 capture_output=True, text=True, timeout=30).stdout
+            return f'"{pid}"' in out
+        def win_wait_gone(pid, seconds=10):
+            deadline = time.monotonic() + seconds
+            while win_alive(pid) and time.monotonic() < deadline:
+                time.sleep(.2)
+            return not win_alive(pid)
         def reap_owned():
             path = self.root / 'owned.pid'
             if not path.exists():
                 return
             pid = int(path.read_text())
+            if sbtest.WINDOWS:
+                if not win_wait_gone(pid, 2):
+                    subprocess.run(['taskkill', '/PID', str(pid), '/T', '/F'], capture_output=True, timeout=30)
+                    if not win_wait_gone(pid):
+                        raise RuntimeError('owned fixture worker did not exit before directory cleanup')
+                return
             def exited():
                 try:
                     # Reap directly if this platform adopted the worker.
@@ -204,6 +222,10 @@ dispatch_lane build 1
                 if not wait_for_exit():
                     raise RuntimeError('owned fixture worker did not exit before directory cleanup')
         def require_worker_finished_before_directory_cleanup():
+            if sbtest.WINDOWS and (self.root / 'owned.pid').exists():
+                self.assertFalse(win_alive(int((self.root / 'owned.pid').read_text())),
+                                 'directory cleanup began while the fixture worker was still running')
+                return
             if (self.root / 'owned.pid').exists():
                 self.assertTrue((self.root / 'owned.finished').exists(),
                                 'fixture directory cleanup raced the owned worker shutdown')
@@ -267,10 +289,14 @@ else:sys.exit('unexpected gh call: '+str(args))
         result = subprocess.run([sbtest.BASH,str(KIT/'scripts/super-board-run.sh'),'fixture'],cwd=self.root,
                                 env=self.env,text=True,capture_output=True,timeout=15)
         self.assertEqual(result.returncode,10,result.stderr + result.stdout)
-        deadline = __import__('time').monotonic()+3
-        while not (self.root/'owned.stopped').exists() and __import__('time').monotonic()<deadline:
-            __import__('time').sleep(.02)
-        self.assertTrue((self.root/'owned.stopped').exists())
+        if sbtest.WINDOWS:
+            self.assertTrue((self.root/'owned.started').exists())
+            self.assertTrue(win_wait_gone(int((self.root/'owned.pid').read_text())), 'the halt left the owned worker running')
+        else:
+            deadline = __import__('time').monotonic()+3
+            while not (self.root/'owned.stopped').exists() and __import__('time').monotonic()<deadline:
+                __import__('time').sleep(.02)
+            self.assertTrue((self.root/'owned.stopped').exists())
         self.assertIsNone(unrelated.poll())
         self.assertTrue((self.state/'inflight/1').is_file())
         self.assertEqual((self.state/'approval.json').read_text(),'{"human":"existing"}')

@@ -63,6 +63,16 @@ rc=0; run_win "python3 -c 'import sys; sys.exit(7)'" || rc=$?
 [ "$(run_win 'f() { sb_exec_python -c "print(3)"; echo unreachable; }; f')" = 3 ] || fail 'sb_exec_python must end the shell'
 # Exported: a child bash inherits the shims without sourcing anything.
 [ "$(run_win 'bash -c "type -t jq"')" = function ] || fail 'child bash must inherit the jq shim'
+# The bare python3 the guard hooks and skills call (no shim): the Store stub is not usable.
+run_win 'sb_python3_usable' && fail 'sb_python3_usable must reject a python3 that cannot start'
+mkdir -p "$T/goodpy"; printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$REAL_PY" > "$T/goodpy/python3"; chmod +x "$T/goodpy/python3"
+env -u SB_PYTHON -u SB_JQ_MODE SB_COMPAT_FORCE_WINDOWS=1 PATH="$T/goodpy:$T/bin:$PATH" \
+  bash --norc -c "unset -f jq python3 2>/dev/null; . '$ROOT/scripts/super-board-compat.sh'; sb_python3_usable" \
+  || fail 'sb_python3_usable must accept a working python3'
+# Lock-file PIDs: this shell is alive, a PID that cannot exist is not.
+run_win 'sb_pid_alive $$' || fail 'sb_pid_alive must see a live PID'
+run_win 'sb_pid_alive 999999999' && fail 'sb_pid_alive must not see a dead PID'
+run_win 'sb_pid_alive ""' && fail 'sb_pid_alive must reject an empty PID'
 # No working Python at all: a clear message, exit 127.
 mkdir -p "$T/nopy"; cp "$T/bin/python3" "$T/nopy/python3"; cp "$T/bin/python3" "$T/nopy/python"
 err=$(env -u SB_PYTHON -u SB_JQ_MODE SB_COMPAT_FORCE_WINDOWS=1 PATH="$T/nopy:/usr/bin:/bin" \

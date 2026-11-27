@@ -313,6 +313,16 @@ else
   echo "   ⏭️  guard hooks skipped (--no-hooks)"
 fi
 
+# Windows: Claude Code runs the hook commands and the skills' `python3 …` lines in Git Bash
+# as written, without the compat shim. A python.org install has no python3.exe, and the
+# Microsoft Store stub that answers to the name only prints a hint: the guards would then
+# fail open on every tool call. Say so; fixing PATH is the user's call.
+if [ -n "${SB_WINDOWS:-}" ] && ! sb_python3_usable; then
+  echo "   ⚠️  Windows: \`python3\` does not start Python 3.9+ in Git Bash. The guard hooks and the skills call it by that name."
+  echo "      Fix: turn off the python3 App execution alias (Settings → Apps → Advanced app settings), then in Git Bash:"
+  echo "      cp \"\$(command -v python)\" \"\$(dirname \"\$(command -v python)\")/python3.exe\"   (a copy beside python.exe; or install Python with the Python install manager, which adds python3)"
+fi
+
 # AGENTS.md: a re-install refreshes the managed super-board block and touches
 # nothing outside its markers. No block yet → onboard writes it (with consent).
 if [ -f "$TARGET/AGENTS.md" ] && grep -q '^<!-- super-board:begin' "$TARGET/AGENTS.md"; then

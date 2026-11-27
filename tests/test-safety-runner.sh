@@ -24,18 +24,27 @@ bash "$WORK/tests/run-safety.sh" >/dev/null || fail 'passing suites failed'
 
 # A hung suite (and the child it started) is stopped at the limit, fails the gate,
 # and the suites after it still run.
-cat > "$WORK/tests/test-b-hang.sh" <<'SH'
+cat > "$WORK/tests/test-b-hang.sh" <<SH
 sleep 600 &
+echo \$! > "$WORK/hang.pid"
 echo started
 wait
 SH
 rc=0
 start=$SECONDS
 echo "[safety-runner] timeout" >&2
-out=$(SB_SUITE_TIMEOUT=3 bash "$WORK/tests/run-safety.sh" 2>&1) || rc=$?
+# Output to a file, not \$(…): a child the runner failed to stop would hold a pipe open
+# and turn this check into a hang instead of a failure.
+SB_SUITE_TIMEOUT=3 bash "$WORK/tests/run-safety.sh" > "$WORK/out" 2>&1 || rc=$?
+out=$(cat "$WORK/out")
 [ "$rc" -eq 1 ] || fail "hung suite did not fail gate: $rc"
-[ $((SECONDS - start)) -lt 60 ] || fail 'hung suite was not stopped at its limit'
+[ $((SECONDS - start)) -lt 60 ] || fail "hung suite was not stopped at its limit: $out"
 [[ "$out" == *'test-b-hang.sh exit 124'* ]] || fail "hung suite not reported as a timeout: $out"
 [[ "$out" == *reached* ]] || fail 'timeout hid later suites'
+hang=$(cat "$WORK/hang.pid")
+if kill -0 "$hang" 2>/dev/null; then
+  kill -KILL "$hang" 2>/dev/null || true
+  fail "the hung suite's child (pid $hang) was left running: $out"
+fi
 rm "$WORK/tests/test-b-hang.sh"
 echo 'PASS: test-safety-runner.sh (empty, failure, continuation, success, timeout)'

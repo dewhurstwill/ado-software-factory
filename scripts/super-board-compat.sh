@@ -23,6 +23,8 @@
 #   MSYS         exported with winsymlinks:nativestrict: `ln -s` makes a real link or
 #                fails, instead of silently copying.
 #   sb_exec_python  use instead of `exec python3 …`: exec cannot run a function.
+#   sb_pid_alive    kill -0 for a lock-file PID, which may be a Windows PID there.
+#   sb_python3_usable  a bare python3 runs Python 3.9+ (what hooks and skills call).
 #   SB_BASH      exported Windows path of this bash, for Python that runs a
 #                shell-script tool (see super-board-compat.py).
 #
@@ -40,6 +42,25 @@ esac
 # tests/test-compat.sh runs the Windows half on any OS.
 [ -z "${SB_COMPAT_FORCE_WINDOWS:-}" ] || SB_WINDOWS=1
 export SB_WINDOWS
+
+# sb_pid_alive <pid>: is the process a lock file names still running? A lock PID comes
+# from bash ($!, an MSYS PID on Windows) or from Python (os.getpid / Popen.pid, a Windows
+# PID there), and bash's kill -0 sees only MSYS PIDs. On Windows a PID that either
+# namespace knows counts as alive: a lock is never reaped for a live worker.
+sb_pid_alive() {
+  [ -n "${1:-}" ] || return 1
+  kill -0 "$1" 2>/dev/null && return 0
+  [ -n "${SB_WINDOWS:-}" ] || return 1
+  case "$1" in *[!0-9]*) return 1 ;; esac
+  tasklist //FI "PID eq $1" //FO CSV //NH 2>/dev/null | grep -q "\"$1\""
+}
+export -f sb_pid_alive 2>/dev/null || true
+# sb_python3_usable: does a bare `python3` (not the shim below) start Python 3.9+? Claude
+# Code runs the guard-hook commands and the skills' `python3 …` lines in Git Bash without
+# this file, so on Windows install.sh warns when the bare name is missing or a Store stub.
+sb_python3_usable() {
+  command python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))' >/dev/null 2>&1 </dev/null
+}
 
 if [ -z "$SB_WINDOWS" ]; then
   sb_exec_python() { exec python3 "$@"; }

@@ -25,7 +25,8 @@
 #      Config: no_progress_cycles (default 6), max_dispatches (default 0 = unlimited).
 #
 # PID namespace trap (Git Bash / MSYS, issue #13): `kill -0` inside this script checks MSYS-namespace
-# PIDs; PowerShell `Get-Process` checks Windows-namespace PIDs. The two disagree about the same
+# PIDs; PowerShell `Get-Process` checks Windows-namespace PIDs. A lock file may hold either (the Codex
+# wave's Python writes Windows PIDs), so lock liveness goes through sb_pid_alive (compat.sh). The two disagree about the same
 # process — a live worker can look dead to Windows tooling and vice versa. Always diagnose liveness
 # with the same tool family that recorded the PID. Workers are started with `nohup claude -p ... &`
 # (no subshell, no `exec` of a native PE), so `$!` names the worker itself rather than a bash stub.
@@ -268,7 +269,7 @@ issue_locked() {
   local issue="$1" lock="$INFLIGHT_DIR/$1"
   [ -f "$lock" ] || return 1
   read_lock "$issue"
-  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+  if [ -n "$PID" ] && sb_pid_alive "$PID"; then
     return 0
   fi
   rm -f "$lock"
@@ -485,7 +486,7 @@ reap_finished_locks() {
     # would dissolve the backend mutual exclusion mid-run.
     case "$issue" in *[!0-9]*|'') continue ;; esac
     read_lock "$issue"
-    if [ -z "$PID" ] || ! kill -0 "$PID" 2>/dev/null; then
+    if [ -z "$PID" ] || ! sb_pid_alive "$PID"; then
       gh_checkpoint
       if [ -n "$BOT_LOGIN" ]; then
         gh_checkpoint
