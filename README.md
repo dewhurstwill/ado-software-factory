@@ -117,7 +117,7 @@ Verb contract, mapping and the service behaviour this relies on:
 |---|---|---|
 | macOS | bash 3.2+ | Every offline suite runs in CI |
 | Linux | bash | Every offline suite runs in CI |
-| Windows | Git Bash (the shell Claude Code uses on Windows) | Every offline suite runs in CI (advisory job) |
+| Windows | Git Bash (the shell Claude Code uses on Windows) | Every offline suite runs in CI |
 
 WSL counts as Linux. On native Windows, before `install.sh`:
 
@@ -130,7 +130,8 @@ WSL counts as Linux. On native Windows, before `install.sh`:
    to `python3` just prints a hint. Turn off the `python3` App execution alias (Settings → Apps → Advanced app
    settings), then copy `python.exe` to `python3.exe` in the same folder, or install Python with the Python
    install manager, which adds `python3`. Check: `python3 --version` in Git Bash. `install.sh` warns when it fails.
-3. Put `jq`, Node.js and `gh` (GitHub) or `az` (Azure DevOps) on `PATH`, then run `gh auth login` / `az login`.
+3. Put `jq` and Node.js on `PATH`. For GitHub also `gh`, then `gh auth login`. For Azure DevOps a PAT in
+   `AZURE_DEVOPS_EXT_PAT` (environment or the project's `.env`) is enough; `az` with `az login` is the alternative.
 4. Run the pack's scripts from Git Bash (`bash install.sh …`), not PowerShell or CMD.
 5. Turn on Developer Mode (Settings → System → For developers) or run Git Bash as administrator once for
    `install.sh`: the per-host links are real symlinks, and without the right to make them it copies the files

@@ -30,8 +30,8 @@ run twice. Keep these tests offline and deterministic; paid agent evaluations be
 Dependencies: Bash, Python 3, Git, jq, Node.js, curl and tar. GitHub's Linux/macOS runners
 provide the command-line utilities; the safety workflow tests Python 3.9 (3.10 on Linux, whose runner no longer offers 3.9) and 3.12 with
 Node.js 22.
-Windows also runs every safety suite under Git Bash (`safety (windows-latest / Git Bash / py…)`),
-as an advisory job until it is green; it does not gate a release yet.
+Windows runs every safety suite under Git Bash (`safety (windows-latest / Git Bash / py…)`), about
+30 minutes a job. It is a required check: a release waits for it.
 
 Loopback HTTP test fixtures use a fixed local server name and skip reverse DNS.
 Runtime fixture failures print the report and app startup logs. Failed safety jobs also
@@ -77,6 +77,8 @@ safety (ubuntu-latest / py3.10)
 safety (ubuntu-latest / py3.12)
 safety (macos-latest / py3.9)
 safety (macos-latest / py3.12)
+safety (windows-latest / Git Bash / py3.9)
+safety (windows-latest / Git Bash / py3.12)
 smoke (ubuntu-latest / py3.10)
 smoke (ubuntu-latest / py3.12)
 smoke (macos-latest / py3.9)

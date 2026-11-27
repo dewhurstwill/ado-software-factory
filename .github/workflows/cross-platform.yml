@@ -1,6 +1,6 @@
 name: cross-platform
 
-# All offline safety suites run on Linux/macOS, and on Windows under Git Bash (advisory).
+# All offline safety suites run on Linux, macOS, and Windows under Git Bash.
 # Reused by release.yml so a failed suite prevents the publish job from running.
 permissions:
   contents: read
@@ -107,12 +107,11 @@ jobs:
           retention-days: 7
 
   # Windows runs the same offline suites under Git Bash, which is the shell
-  # Claude Code itself uses there. Advisory (continue-on-error) until the suites
-  # are green on Windows; then drop that line so a release is gated on it too.
+  # Claude Code itself uses there. Green since 2026-11-27 and required: a failing
+  # Windows suite blocks a release like a failing Linux or macOS one.
   safety-windows:
     name: safety (windows-latest / Git Bash / py${{ matrix.python }})
     runs-on: windows-latest
-    continue-on-error: true
     timeout-minutes: 120
     strategy:
       fail-fast: false
