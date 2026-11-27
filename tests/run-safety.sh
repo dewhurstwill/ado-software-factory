@@ -35,7 +35,8 @@ kill_tree() {
             for (p in pg) if (pg[p] == root) keep[p] = 1
             while (changed) { changed = 0
               for (p in pp) if (!(p in keep) && (pp[p] in keep)) { keep[p] = 1; changed = 1 } }
-            for (p in keep) print p, wp[p] }')
+            for (p in keep) if (p != root) print p, wp[p]
+            print root, wp[root] }')  # the suite last: its children first
     while read -r p w; do
       [ -n "$p" ] || continue
       kill -KILL "$p" 2>/dev/null || true
@@ -60,23 +61,28 @@ run_limited() {
   pid=$!
   set +m
   # The watchdog writes nothing to the suite's output, so a sleep it leaves behind can
-  # never hold a $(…) or pipe open, and it is not waited for once the suite is done
-  # (a signal can be slow to reach a waiting MSYS bash).
+  # never hold a $(…) or pipe open, and it is not waited for when the suite finishes in
+  # time (a signal can be slow to reach a waiting MSYS bash). Once the limit fires it
+  # ignores TERM and is waited for: the suite can die before kill_tree has reached its
+  # children (Windows ends them one by one), and they must not outlive the run.
   (
     trap 'kill "$sp" 2>/dev/null; exit 0' TERM
     sleep "$limit" &
     sp=$!
     wait "$sp"
+    trap '' TERM
     : > "$marker"
     kill_tree "$pid"
   ) </dev/null >/dev/null 2>&1 &
   wd=$!
   wait "$pid"
   rc=$?
-  kill -TERM "$wd" 2>/dev/null || true
   if [ -e "$marker" ]; then
+    wait "$wd" 2>/dev/null || true
     rc=124; rm -f "$marker"
     echo "::error::timed out after ${limit}s; stopped the suite" >&2
+  else
+    kill -TERM "$wd" 2>/dev/null || true
   fi
   return "$rc"
 }
