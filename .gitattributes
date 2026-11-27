@@ -1,0 +1,16 @@
+# Scripts run under bash on every platform (Git Bash on Windows). A checkout with
+# core.autocrlf=true (the Git for Windows default) would otherwise give them CRLF
+# line endings, and bash fails on the first line with "\r: command not found".
+* text=auto eol=lf
+*.sh  text eol=lf
+*.py  text eol=lf
+*.js  text eol=lf
+*.mjs text eol=lf
+*.md  text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.patch text eol=lf
+evals/_stubs/bin/* text eol=lf
+*.png binary
+*.jpg binary
+*.webp binary

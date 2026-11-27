@@ -93,3 +93,52 @@ jobs:
           path: ${{ runner.temp }}/runtime-test-evidence
           if-no-files-found: ignore
           retention-days: 7
+
+  # Windows runs the same offline suites under Git Bash, which is the shell
+  # Claude Code itself uses there. Advisory (continue-on-error) until the suites
+  # are green on Windows; then drop that line so a release is gated on it too.
+  safety-windows:
+    name: safety (windows-latest / Git Bash / py${{ matrix.python }})
+    runs-on: windows-latest
+    continue-on-error: true
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.12"]
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      # Git for Windows defaults to core.autocrlf=true; .gitattributes must win.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Tool versions as the scripts will find them
+        run: |
+          for t in bash python3 python py git jq node curl tar; do
+            printf '%-8s %s\n' "$t" "$(command -v "$t" || echo MISSING)"
+          done
+          python3 --version || true
+          jq --version || true
+          printf 'a\nb\n' | jq -R . | od -c | head -3
+      - name: Run every offline safety suite
+        env:
+          SB_RUNTIME_TEST_ARTIFACTS: ${{ runner.temp }}/runtime-test-evidence
+        run: bash tests/run-safety.sh
+      - name: Keep runtime test evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-evidence-windows-py${{ matrix.python }}
+          path: ${{ runner.temp }}/runtime-test-evidence
+          if-no-files-found: ignore
+          retention-days: 7
