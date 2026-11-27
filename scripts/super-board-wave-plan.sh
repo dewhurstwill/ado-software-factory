@@ -101,7 +101,12 @@ NUMBER=$(echo "$CONFIG_JSON" | jq -r '.project.number')
 if [ -n "$ITEMS_FILE" ]; then
   ITEMS=$(cat "$ITEMS_FILE")
 else
-  ITEMS=$("$HERE/super-board-card.sh" --owner "$OWNER" --number "$NUMBER" items)
+  if [ "$(echo "$CONFIG_JSON" | jq -r '.provider // "github"')" = "azure-devops" ]; then
+    # Another provider owns its board: hand card.sh a fresh copy of the config (it may be a FIFO).
+    ITEMS=$("$HERE/super-board-card.sh" --config <(printf '%s\n' "$CONFIG_JSON") items)
+  else
+    ITEMS=$("$HERE/super-board-card.sh" --owner "$OWNER" --number "$NUMBER" items)
+  fi
 fi
 
 # `variant` was removed in v3.0.0 (labels route cards now). Absent or "full" is
@@ -118,13 +123,13 @@ esac
 if [ -n "$DEPS_FILE" ]; then
   DEPS=$(cat "$DEPS_FILE")
 else
-  REPO=$(echo "$CONFIG_JSON" | jq -r '.repo.remote // ""' \
-           | sed -E 's#^https?://github\.com/##; s#\.git$##')
+  # $CONFIG may be a FIFO already consumed above: hand each forge call its own copy.
+  REPO=$(python3 "$HERE/super-board-forge.py" --config <(printf '%s\n' "$CONFIG_JSON") repo --explicit)
   [ -n "$REPO" ] || { echo "config.repo.remote is required to derive dependencies" >&2; exit 66; }
   HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
   # A graph we cannot fetch is not a graph of zero blockers. Fail rather than
   # plan a wave that treats every card as free.
-  DEPS=$("$HERE/super-board-deps.sh" --repo "$REPO" --limit 300) || {
+  DEPS=$("$HERE/super-board-deps.sh" --repo "$REPO" --config <(printf '%s\n' "$CONFIG_JSON") --limit 300) || {
     rc=$?; echo "could not derive the dependency graph for ${REPO}" >&2; exit "$rc"; }
 fi
 

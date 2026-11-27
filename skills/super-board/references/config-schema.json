@@ -13,6 +13,33 @@
   // E.g. "staging QA" or "admin build pipeline".
   "description": "<short scannable label, e.g. 'staging QA' or 'admin build pipeline'>",
 
+  // Which forge backs tickets, PRs and merges: "github" (default when absent) or
+  // "azure-devops". Scripts reach it through .claude/bin/super-board-forge.py;
+  // the verb contract is in references/providers.md.
+  "provider": "github",
+
+  // Only when provider is "azure-devops" (project.owner/number above are GitHub-only
+  // and unused there). Tickets are work items, the board is one team's Kanban board,
+  // labels are work item tags, the claim is the tag `sb:claimed`. Mapping, auth order
+  // (AZURE_DEVOPS_EXT_PAT, <repo.path>/.env, az login) and gotchas: references/providers.md.
+  "ado": {
+    // Organization URL. $SB_ADO_BASE_URL overrides it for transport (tests only).
+    "organization": "https://dev.azure.com/<org>",
+    "project": "<project name>",
+    // Default "<project> Team".
+    "team": "<team name>",
+    // Backlog level name of the team's board. Default "Stories".
+    "board": "Stories",
+    // Repo the pull-request verbs use (a later slice). Default: the project name.
+    "repository": "<repo name>",
+    // Work item type created per ticket label; a ticket with no listed label gets the
+    // "feature" type. These are the defaults.
+    "work_item_types": { "feature": "User Story", "bug": "Bug", "qa": "User Story" },
+    // Field holding the ticket body, per work item type. Default System.Description, except
+    // Bug: Microsoft.VSTS.TCM.ReproSteps (shown below). An explicit value, even {}, replaces it.
+    "body_fields": { "Bug": "Microsoft.VSTS.TCM.ReproSteps" }
+  },
+
   "project": {
     "owner": "<github-owner>",
     "title": "<project title on GitHub>",

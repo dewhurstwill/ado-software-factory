@@ -111,7 +111,6 @@ set -euo pipefail
 # Fixed read commands: a malformed payload is GitHub's, so it halts (#32).
 export SB_GITHUB_READ_STRICT=1
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-GITHUB_READ="$HERE/super-board-github-read.py"
 
 CONFIG=""; PR=""; LOCK_TIMEOUT=1800; STALE_AFTER=""; DRY=0; EXPECT_HEAD=""; SUBJECT=""; MSG_FILE=""
 while [ $# -gt 0 ]; do
@@ -142,10 +141,11 @@ if [ -z "$STALE_AFTER" ]; then
   [ "$STALE_AFTER" -lt "$STALE_FLOOR" ] && STALE_AFTER="$STALE_FLOOR"
 fi
 
+FORGE=(python3 "$HERE/super-board-forge.py" --config "$CONFIG")
 CONFIG_JSON=$(cat "$CONFIG")
 printf '%s\n' "$CONFIG_JSON" | python3 "$HERE/super-board-verification-ready.py" --config -
 BASE=$(echo "$CONFIG_JSON" | jq -r '.base_branch // "main"')
-REPO=$(echo "$CONFIG_JSON" | jq -r '.repo.remote // ""' | sed -E 's#^https?://github\.com/##; s#\.git$##')
+REPO=$("${FORGE[@]}" repo --explicit)
 REPO_PATH=$(echo "$CONFIG_JSON" | jq -r '.repo.path // "."')
 export SB_REPO_PATH="$REPO_PATH"
 # Read with a while-loop rather than `mapfile`: macOS ships bash 3.2 and every
@@ -160,7 +160,7 @@ if [ "${#VERIFY[@]}" -eq 0 ]; then
   echo "verification-readiness: verify_commands yielded no usable shell commands; repair the project config and restart the board." >&2
   exit 9
 fi
-python3 "$GITHUB_READ" --check
+"${FORGE[@]}" check
 
 LOCK_DIR="${REPO_PATH}/.claude/super-board/inflight/merge.lock"
 mkdir -p "$(dirname "$LOCK_DIR")"
@@ -206,12 +206,11 @@ trap cleanup EXIT
 # ---- the head guard --------------------------------------------------------
 # Review evidence belongs to one commit. If the branch moved after the Reviewer
 # passed it, the tests it reran and the diff it read describe something else.
-pr_head() { python3 "$GITHUB_READ" --kind head -- pr view "$PR" ${REPO:+--repo "$REPO"} --json headRefName,headRefOid \
-              -q '.headRefName + " " + .headRefOid'; }
+pr_head() { "${FORGE[@]}" pr head "$PR"; }
 HEAD=$(pr_head) || exit $?
 read -r HEAD_REF HEAD_SHA <<<"$HEAD"
 [ -n "${HEAD_SHA:-}" ] || { say "could not read the PR head from GitHub"; exit 1; }
-pr_state() { python3 "$GITHUB_READ" --kind merge-state -- pr view "$PR" ${REPO:+--repo "$REPO"} --json state,mergeCommit,headRefOid; }
+pr_state() { "${FORGE[@]}" pr state "$PR"; }
 STATE=$(pr_state) || exit $?
 if [ "$(echo "$STATE" | jq -r .state)" = MERGED ]; then
   say "already merged; no verification, migration, or merge is repeated"
@@ -236,8 +235,8 @@ fi
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # Outside $SCRATCH: `git worktree add` below needs that directory empty.
 META=$(mktemp); DIFF=$(mktemp)
-python3 "$GITHUB_READ" --kind metadata -- pr view "$PR" ${REPO:+--repo "$REPO"} --json labels,files,additions,deletions,changedFiles,body > "$META"
-python3 "$GITHUB_READ" --kind diff --meta "$META" -- pr diff "$PR" ${REPO:+--repo "$REPO"} > "$DIFF"
+"${FORGE[@]}" pr metadata "$PR" > "$META"
+"${FORGE[@]}" pr diff "$PR" --meta "$META" > "$DIFF"
 PLAN=$(python3 "$HERE/super-board-merge-policy.py" --config "$CONFIG" --meta "$META" --diff "$DIFF") || {
   echo "human-gate: policy — could not classify the PR (unreadable metadata)"
   say "merge policy could not be evaluated — a human merges this one"; exit 7; }
@@ -248,7 +247,7 @@ APPROVED=false
 approval_check() {
   APPROVAL=$(python3 "$HERE/super-board-approval.py" --repo "$REPO" --pr "$PR" \
     --head "$HEAD_SHA" --plan "$PLAN") || APPROVAL='{"approved":false}'
-  python3 "$GITHUB_READ" --check || exit $?
+  "${FORGE[@]}" check || exit $?
   APPROVED=$(echo "$APPROVAL" | jq -r '.approved // false')
 }
 approval_request() {
@@ -289,7 +288,7 @@ for cmd in "${VERIFY[@]}"; do
 done
 say "verified green against ${BASE} (${#VERIFY[@]} command(s))"
 
-python3 "$GITHUB_READ" --check
+"${FORGE[@]}" check
 
 # ---- migrations (inside the lock, after the build proof) -------------------
 # Run the configured migrate command for every allowed env, from the verified
@@ -303,7 +302,7 @@ if [ "$(echo "$PLAN" | jq '.migrations | length')" -gt 0 ]; then
     [ -n "$env" ] || continue
     if [ "$DRY" -eq 1 ]; then say "dry run: would migrate ${env}: ${cmd}"; continue; fi
     say "migrate ${env}: ${cmd}"
-    python3 "$GITHUB_READ" --check
+    "${FORGE[@]}" check
     if ! ( cd "$SCRATCH" && eval "$cmd" ) >"$SCRATCH/.migrate.log" 2>&1; then
       say "FAILED: migrate ${env}"; tail -20 "$SCRATCH/.migrate.log" >&2
       NEEDS+=("${cmd}   # ${env}: failed in the merge gate — fix, run it, then mark done")
@@ -326,7 +325,7 @@ fi
 if [ "$APPROVED" = true ]; then
   # Code remains pinned; body-declared human steps and config can change without
   # a commit. Reclassify them too instead of reusing the old approval scope.
-  python3 "$GITHUB_READ" --kind metadata -- pr view "$PR" ${REPO:+--repo "$REPO"} --json labels,files,additions,deletions,changedFiles,body > "$META"
+  "${FORGE[@]}" pr metadata "$PR" > "$META"
   PLAN=$(python3 "$HERE/super-board-merge-policy.py" --config "$CONFIG" --meta "$META" --diff "$DIFF") || {
     say "human approval scope could not be refreshed"; exit 7; }
   approval_check
@@ -345,10 +344,10 @@ fi
 
 # --match-head-commit makes GitHub refuse if anything was pushed after HEAD_SHA,
 # including during the verification run above.
-python3 "$GITHUB_READ" --check
-if gh pr merge "$PR" ${REPO:+--repo "$REPO"} --squash --delete-branch \
+"${FORGE[@]}" check
+if "${FORGE[@]}" pr merge "$PR" --squash --delete-branch \
      ${SUBJECT:+--subject "$SUBJECT"} ${MSG_FILE:+--body-file "$MSG_FILE"} \
-     --match-head-commit "$HEAD_SHA" 2>&1 | tail -3 >&2; then
+     --match-head "$HEAD_SHA" 2>&1 | tail -3 >&2; then
   say "merged ${HEAD_SHA}"
   # Post-merge tidy-up: drop worktrees and local branches the merge just made
   # redundant. Optional (only when the cleanup-wt hook is installed), local-only, and it
@@ -369,4 +368,4 @@ if [ "$NOW_SHA" != "$HEAD_SHA" ]; then
   say "the review evidence is void — send the card back to Review"
   exit 6
 fi
-python3 "$GITHUB_READ" --halt "Merge response failed and GitHub has not confirmed a merge; reconcile PR #${PR} before restarting. No merge was retried."
+"${FORGE[@]}" halt "Merge response failed and GitHub has not confirmed a merge; reconcile PR #${PR} before restarting. No merge was retried."

@@ -38,3 +38,7 @@ docs/super-board/runs/**/*.trace.zip
 
 # claude plugin eval output
 evals/results/
+
+# local secrets (e.g. AZURE_DEVOPS_EXT_PAT for live provider checks)
+.env
+.env.*

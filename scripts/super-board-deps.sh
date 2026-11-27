@@ -38,7 +38,7 @@
 # that does not have what it needs yet — one wave saved, one rewrite spent.
 #
 # Usage:
-#   super-board-deps.sh --repo <owner/name> [--issues 12,34] [--from <payload.json>]
+#   super-board-deps.sh --repo <owner/name> [--config <config.json>] [--issues 12,34] [--from <payload.json>]
 #
 # Stdout, one object keyed by issue number:
 #   { "40": { "number": 40, "title": "…", "state": "OPEN",
@@ -60,41 +60,53 @@
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-REPO=""; LIMIT="200"; ONLY=""; FROM=""
+REPO=""; LIMIT="200"; ONLY=""; FROM=""; CONFIG=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo)   REPO="$2"; shift 2 ;;
     --limit)  LIMIT="$2"; shift 2 ;;
     --issues) ONLY="$2"; shift 2 ;;
+    --config) CONFIG="$2"; shift 2 ;;
     --from)   FROM="$2"; shift 2 ;;   # a saved `gh issue list --json …` payload; tests use this
     *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
 done
+
+# Read the config once: it may be a FIFO (a process substitution), and each forge call needs its own copy.
+CONFIG_JSON=""; PROVIDER="github"
+if [ -n "$CONFIG" ]; then
+  CONFIG_JSON=$(cat "$CONFIG")
+  PROVIDER=$(echo "$CONFIG_JSON" | jq -r '.provider // "github"')
+fi
+
+# With a config and no --repo, the forge names the repo; another provider needs none (its graph
+# comes from the forge, not from a repo slug).
+if [ -z "$REPO" ] && [ -z "$FROM" ] && [ -n "$CONFIG_JSON" ]; then
+  REPO=$(python3 "$HERE/super-board-forge.py" --config <(printf '%s\n' "$CONFIG_JSON") repo) || exit $?
+fi
 
 # Open issues carry the graph; closed ones are only needed to answer "is this
 # blocker still open?", which `openBlockers` derives from the open set itself.
 if [ -n "$FROM" ]; then
   ISSUES=$(cat "$FROM")
 else
-  [ -n "$REPO" ] || { echo "--repo <owner/name> is required" >&2; exit 64; }
+  [ -n "$REPO" ] || [ "$PROVIDER" != "github" ] || { echo "--repo <owner/name> is required" >&2; exit 64; }
   # GraphQL rather than `gh issue list`, because the lanes' `blocked-by:` line
   # lives in a COMMENT and the REST list cannot return comments. One query gets
   # bodies and comments together; `gh issue view` per issue would be one REST
   # call each, and a 35-card board burns that budget for no reason.
-  PAGES=$(python3 "$HERE/super-board-github-read.py" --kind issues -- api graphql --paginate --slurp -f query='
-    query($owner:String!,$repo:String!,$endCursor:String){
-      repository(owner:$owner,name:$repo){
-        issues(states:OPEN,first:100,after:$endCursor){
-          pageInfo{ hasNextPage endCursor }
-          nodes{ number title body state labels(first:30){ nodes{ name } } comments(last:8){ nodes{ body } } }
-        }
-      }
-    }' -F owner="${REPO%%/*}" -F repo="${REPO##*/}") || exit $?
-  ISSUES=$(printf '%s' "$PAGES" | jq '[ .[].data.repository.issues.nodes[] ]')
+  if [ -n "$CONFIG_JSON" ]; then
+    ISSUES=$(python3 "$HERE/super-board-forge.py" --config <(printf '%s\n' "$CONFIG_JSON") --repo "$REPO" ticket graph) || exit $?
+  else
+    ISSUES=$(python3 "$HERE/super-board-forge.py" --repo "$REPO" ticket graph) || exit $?
+  fi
 fi
 
 APPROVAL_REPO="$REPO"
 [ -z "$FROM" ] || APPROVAL_REPO=""
+# Approval comments are still read through `gh`; another provider's repo is not an owner/name
+# slug, so no card there can be verified as human-approved (needsYouDone stays false: fail safe).
+[ "$PROVIDER" = "github" ] || APPROVAL_REPO=""
 echo "$ISSUES" | jq --arg only "$ONLY" '
   # ---- the parser ---------------------------------------------------------
   # Everything after the LAST "## Blocked by" heading, stopping at the next

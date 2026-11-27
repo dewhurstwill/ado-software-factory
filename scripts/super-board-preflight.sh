@@ -27,8 +27,8 @@
 # downgrade a mechanical hold only by naming why the match is a different feature.
 #
 # Cheap by construction: the three list calls run ONCE per invocation however many
-# issues are checked (pass --issues 12,14,15 to batch a wave), plus one `gh issue
-# view` per issue. The worker gh guard runs first when it is installed alongside.
+# issues are checked (pass --issues 12,14,15 to batch a wave), plus one ticket
+# view per issue. The worker gh guard runs first when it is installed alongside.
 #
 # Usage:
 #   super-board-preflight.sh --repo <owner/name> --issues <N[,M…]>
@@ -69,15 +69,16 @@ if [ -f "$HERE/super-board-gh-guard.sh" ]; then
   sb_gh_guard_check 200 || exit $?
 fi
 
-MERGED=$(python3 "$HERE/super-board-github-read.py" --kind prs-merged -- pr list --repo "$REPO" --state merged --limit 100 --json number,title,body,url ) || exit $?
-OPEN=$(python3 "$HERE/super-board-github-read.py" --kind prs-open -- pr list --repo "$REPO" --state open --limit 100 --json number,title,body,url,headRefName,files ) || exit $?
-CLOSED=$(python3 "$HERE/super-board-github-read.py" --kind issues-closed -- issue list --repo "$REPO" --state closed --limit 100 --json number,title,body,stateReason ) || exit $?
+FORGE=(python3 "$HERE/super-board-forge.py" --repo "$REPO")
+MERGED=$("${FORGE[@]}" pr list --state merged --limit 100) || exit $?
+OPEN=$("${FORGE[@]}" pr list --state open --limit 100) || exit $?
+CLOSED=$("${FORGE[@]}" ticket list --state closed --limit 100) || exit $?
 CARDS="[]"
 [ -n "$INFLIGHT" ] && CARDS=$(cat "$INFLIGHT")
 
 TARGETS="[]"
 for n in ${ISSUES//,/ }; do
-  one=$(python3 "$HERE/super-board-github-read.py" --kind issue -- issue view "$n" --repo "$REPO" --json number,title,body ) || exit $?
+  one=$("${FORGE[@]}" ticket view "$n") || exit $?
   TARGETS=$(jq -c --argjson one "$one" '. + [$one]' <<<"$TARGETS")
 done
 

@@ -367,6 +367,13 @@ def read(args, kind='json', meta=None, recovering=False):
 
 
 def main():
+    # gh output carries emoji; a piped Windows stdout defaults to the ANSI code page and
+    # raises on them. newline='\n' keeps diffs byte-exact (no CRLF translation).
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', newline='\n')
+        except (AttributeError, ValueError):
+            pass
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--kind', choices=('json','scalar','issue-number','head','state','diff','metadata','items','issues','issue-history','quota','projects','project','fields','status-field','permission','comments','approval','merge-state','body','dedupe','prs-open','prs-merged','issues-closed','issue','object','array'))
     parser.add_argument('--issue-history', help='complete paginated all-state issue history for owner/name')

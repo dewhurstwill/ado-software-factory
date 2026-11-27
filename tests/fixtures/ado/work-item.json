@@ -1,0 +1,79 @@
+{
+  "_links": {
+    "fields": {
+      "href": "https://dev.azure.com/example/Factory/_apis/wit/fields"
+    },
+    "html": {
+      "href": "https://dev.azure.com/example/Factory/_workitems/edit/1"
+    },
+    "self": {
+      "href": "https://dev.azure.com/example/Factory/_apis/wit/workItems/1"
+    },
+    "workItemComments": {
+      "href": "https://dev.azure.com/example/Factory/_apis/wit/workItems/1/comments"
+    },
+    "workItemRevisions": {
+      "href": "https://dev.azure.com/example/Factory/_apis/wit/workItems/1/revisions"
+    },
+    "workItemType": {
+      "href": "https://dev.azure.com/example/Factory/_apis/wit/workItemTypes/User%20Story"
+    },
+    "workItemUpdates": {
+      "href": "https://dev.azure.com/example/Factory/_apis/wit/workItems/1/updates"
+    }
+  },
+  "continuation_token": null,
+  "fields": {
+    "Microsoft.VSTS.Common.Priority": 2,
+    "Microsoft.VSTS.Common.StateChangeDate": "2026-11-27T10:36:59.687Z",
+    "Microsoft.VSTS.Common.ValueArea": "Business",
+    "System.AreaPath": "Factory",
+    "System.BoardColumn": "Backlog",
+    "System.BoardColumnDone": false,
+    "System.ChangedBy": {
+      "_links": {
+        "avatar": {
+          "href": "https://dev.azure.com/example/_apis/GraphProfile/MemberAvatars/msa.EXAMPLE"
+        }
+      },
+      "descriptor": "msa.EXAMPLE",
+      "displayName": "Example User",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "imageUrl": "https://dev.azure.com/example/_apis/GraphProfile/MemberAvatars/msa.EXAMPLE",
+      "uniqueName": "user@example.com",
+      "url": "https://spsproduks1.vssps.visualstudio.com/A00000000-0000-0000-0000-0000000000aa/_apis/Identities/00000000-0000-0000-0000-000000000001"
+    },
+    "System.ChangedDate": "2026-11-27T10:36:59.687Z",
+    "System.CommentCount": 0,
+    "System.CreatedBy": {
+      "_links": {
+        "avatar": {
+          "href": "https://dev.azure.com/example/_apis/GraphProfile/MemberAvatars/msa.EXAMPLE"
+        }
+      },
+      "descriptor": "msa.EXAMPLE",
+      "displayName": "Example User",
+      "id": "00000000-0000-0000-0000-000000000001",
+      "imageUrl": "https://dev.azure.com/example/_apis/GraphProfile/MemberAvatars/msa.EXAMPLE",
+      "uniqueName": "user@example.com",
+      "url": "https://spsproduks1.vssps.visualstudio.com/A00000000-0000-0000-0000-0000000000aa/_apis/Identities/00000000-0000-0000-0000-000000000001"
+    },
+    "System.CreatedDate": "2026-11-27T10:36:59.687Z",
+    "System.Description": "\n## Problem\nProbe ticket.\n\n## Blocked by\n- None.\n",
+    "System.IterationPath": "Factory",
+    "System.Reason": "New",
+    "System.State": "New",
+    "System.Tags": "feature; probe",
+    "System.TeamProject": "Factory",
+    "System.Title": "[sandbox probe] column move test",
+    "System.WorkItemType": "User Story",
+    "WEF_0123456789ABCDEF0123456789ABCDEF_Kanban.Column": "Backlog",
+    "WEF_0123456789ABCDEF0123456789ABCDEF_Kanban.Column.Done": false
+  },
+  "id": 1,
+  "multilineFieldsFormat": {
+    "System.Description": "markdown"
+  },
+  "rev": 1,
+  "url": "https://dev.azure.com/example/Factory/_apis/wit/workItems/1"
+}

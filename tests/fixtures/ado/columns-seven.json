@@ -1,0 +1,86 @@
+{
+  "continuation_token": null,
+  "count": 7,
+  "value": [
+    {
+      "columnType": "incoming",
+      "id": "11111111-0000-0000-0000-000000000001",
+      "itemLimit": 0,
+      "name": "Backlog",
+      "stateMappings": {
+        "Bug": "New",
+        "User Story": "New"
+      }
+    },
+    {
+      "columnType": "inProgress",
+      "description": "",
+      "id": "11111111-0000-0000-0000-000000000011",
+      "isSplit": false,
+      "itemLimit": 0,
+      "name": "Ready",
+      "stateMappings": {
+        "Bug": "New",
+        "User Story": "New"
+      }
+    },
+    {
+      "columnType": "inProgress",
+      "description": "",
+      "id": "11111111-0000-0000-0000-000000000002",
+      "isSplit": false,
+      "itemLimit": 0,
+      "name": "Building",
+      "stateMappings": {
+        "Bug": "Active",
+        "User Story": "Active"
+      }
+    },
+    {
+      "columnType": "inProgress",
+      "description": "",
+      "id": "11111111-0000-0000-0000-000000000012",
+      "isSplit": false,
+      "itemLimit": 0,
+      "name": "QA",
+      "stateMappings": {
+        "Bug": "Active",
+        "User Story": "Active"
+      }
+    },
+    {
+      "columnType": "inProgress",
+      "description": "",
+      "id": "11111111-0000-0000-0000-000000000003",
+      "isSplit": false,
+      "itemLimit": 0,
+      "name": "Review",
+      "stateMappings": {
+        "Bug": "Active",
+        "User Story": "Active"
+      }
+    },
+    {
+      "columnType": "inProgress",
+      "description": "",
+      "id": "11111111-0000-0000-0000-000000000013",
+      "isSplit": false,
+      "itemLimit": 0,
+      "name": "Blocked",
+      "stateMappings": {
+        "Bug": "Active",
+        "User Story": "Active"
+      }
+    },
+    {
+      "columnType": "outgoing",
+      "id": "11111111-0000-0000-0000-000000000004",
+      "itemLimit": 0,
+      "name": "Done",
+      "stateMappings": {
+        "Bug": "Closed",
+        "User Story": "Closed"
+      }
+    }
+  ]
+}

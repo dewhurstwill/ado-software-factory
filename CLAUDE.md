@@ -30,7 +30,7 @@ If a problem surfaces during the run, the orchestrator's reply is: "I saw X. Wan
 
 Workers (`super-build`, `super-qa`, `super-review`) share the dispatcher's `gh` token bucket. They MUST:
 
-- Required GitHub reads use `.claude/bin/super-board-github-read.py`; exit 79 stops the run.
+- Required GitHub reads use `.claude/bin/super-board-github-read.py` (scripts reach it through `super-board-forge.py`, the provider seam: `skills/super-board/references/providers.md`); exit 79 stops the run.
 - Check its `--check` before GitHub writes, migrations, merges, and new dispatch; preserve work when halted.
 - Source `.claude/bin/super-board-gh-guard.sh` (`scripts/` in this repo) at worker start.
 - Call `sb_gh_guard_check 200` before any burst of `gh` calls.
@@ -55,7 +55,7 @@ left alone; where no symlink can be made the file is copied. Settings and run st
 ├── skills/<all nine>/...
 ├── hooks/guard-*.py, cleanup-wt.py   (wired into settings.json; --no-hooks skips)
 ├── workflows/super-board-wave.js, ui-refine-loop.js
-└── bin/super-board-*.sh (incl. pr-body), super-board-*.py (status, merge-policy, agents-md, settings, setup), super-qa-file-bug.sh, super-review-file-refactor.sh
+└── bin/super-board-*.sh (incl. pr-body), super-board-*.py (status, forge, forge-ado, merge-policy, agents-md, settings, setup), super-qa-file-bug.sh, super-review-file-refactor.sh
 ```
 
 It also refreshes the managed `<!-- super-board:begin … -->` block in the target's AGENTS.md when

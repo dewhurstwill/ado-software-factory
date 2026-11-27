@@ -60,6 +60,10 @@ shift
 if [ -n "$CONFIG" ]; then
   [ -r "$CONFIG" ] || { echo "config not found: $CONFIG" >&2; exit 66; }
   CJ=$(cat "$CONFIG")
+  # Another provider owns its own board verbs: hand over to the forge (config read once above).
+  if [ "$(echo "$CJ" | jq -r '.provider // "github"')" = "azure-devops" ]; then
+    exec python3 "$HERE/super-board-forge.py" --config <(printf '%s\n' "$CJ") board "$VERB" "$@"
+  fi
   [ -n "$OWNER" ]  || OWNER=$(echo "$CJ" | jq -r '.project.owner // ""')
   [ -n "$NUMBER" ] || NUMBER=$(echo "$CJ" | jq -r '.project.number // ""')
   [ -n "$REPO" ]   || REPO=$(echo "$CJ" | jq -r '.repo.remote // ""')
