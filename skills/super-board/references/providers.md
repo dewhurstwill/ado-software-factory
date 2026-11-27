@@ -62,6 +62,7 @@ Exit 79 is shared by both providers: one halt file (the name says github; instal
 | provider, repo | `provider` · `repo [--explicit]` | name · slug | `git remote get-url origin` parsing |
 | is the run halted | `check` | nothing; 79 when halted | `super-board-github-read.py --check` |
 | record an unknown write outcome | `halt <reason>` | nothing; records the halt, 79 | `super-board-github-read.py --halt` |
+| clear a read halt | `resume` | nothing; 0 once the saved read passes and the halt file is archived; 79 when it still fails or the halt is not a replayable read | `super-board-github-read.py --resume` |
 | who am I | `whoami` | `{login,id}` | `gh api user`, `gh auth status` |
 | quota | `quota` | `{remaining,limit,reset,at,seen}`; GitHub adds `graphql` and `core` (`{limit,remaining,used,reset}`), `remaining` is the GraphQL bucket; Azure DevOps adds `cost`/`total_cost` when the service sends only a cost. `quota --throttle` / `--take-throttle` (Azure DevOps): `{throttled,throttled_at}` | `gh api rate_limit` (use `sb_gh_guard_check` / `sb_gh_guard_summary`, which are provider-aware, before a burst) |
 | default branch, empty repo, base exists | `repository` | `{repository,defaultBranch,empty,base,baseExists}` (`defaultBranch` null when `empty`; `base` = config `base_branch`) | `gh repo view --json defaultBranchRef`, `gh api repos/{o}/{r}` |
@@ -91,7 +92,10 @@ unless none or only the bot is there, adds the bot, RE-READS and requires the li
 not fail when someone else holds the card: issues take up to 10 assignees), else removes its own assignee and exits 4.
 `[bot]` suffixes and case are ignored when comparing. `--force` on `release` changes nothing on GitHub (a human
 assignee is not a leaked claim). Azure DevOps: a per-holder tag, see below. Callers no longer skip the claim when
-`bot_identity` is unset.
+`bot_identity` is unset. `notifications.bot_identity` is GitHub-only: the Azure DevOps backend ignores it (the
+claim is the holder tag, `assignees` shows the `whoami` login), `super-board-setup.py check` never flags it
+missing or `"auto"` there, `super-board-status.py` shows the `whoami` login where GitHub shows the bot, and
+`super-board-stop.sh` reads it only on its GitHub path.
 
 ### Board
 
@@ -194,7 +198,10 @@ shown (body default `System.Description`, except Bug: `Microsoft.VSTS.TCM.ReproS
 ### Auth (first that exists; a token is never printed or logged)
 
 1. env `AZURE_DEVOPS_EXT_PAT`, sent as `Authorization: Basic base64(":" + PAT)`.
-2. a line `AZURE_DEVOPS_EXT_PAT=...` in `<repo.path>/.env` (lane agents load no `.env`).
+2. a line `AZURE_DEVOPS_EXT_PAT=...` in `<repo.path>/.env`, else in `<repo.path>/.env.local` (lane agents load no
+   dotenv file; the first non-empty line wins). `super-board-env-check.sh AZURE_DEVOPS_EXT_PAT` (no `--file`) looks
+   in `.env.local` then `.env` and says `present` for either, and `super-board-setup.py check` uses the same two
+   files, so the three agree; name one file with `--file` to check only it.
 3. `az account get-access-token --resource 499b84ac-1321-427f-aa17-267ca6975798` as a Bearer token.
 
 None: exit 69 naming the three options.
@@ -264,9 +271,19 @@ Base `{org}/{project}/_apis/...`; team routes `{org}/{project}/{team}/_apis/...`
 Reads: three attempts, backoff `SB_GITHUB_RETRY_DELAY`, `429` waits `Retry-After` (capped 60s, counts
 as an attempt). 400, 401, 403, 203, a redirect and a 404 on a fixed resource (board, states, team
 settings) halt on the first attempt; three failures or three malformed payloads halt (79). A 404 on
-one work item is exit 3. Writes are never retried, except a JSON-Patch whose `/rev` test the server
+one work item is exit 3. A read that halts records what it takes to replay it in the halt file's `operation`:
+`{provider: "azure-devops", method, path (under the organization; no host, no credentials), body (a POST read's
+JSON), validate (the validator's name), fixed, what}`. Writes are never retried, except a JSON-Patch whose `/rev` test the server
 rejected as stale (409, 412, or a body naming VS403351 / a revision mismatch): it did not apply, so
 re-read and retry, max 3. Halt messages say Azure DevOps.
+
+**Recovery: `forge resume`.** It replays the saved read with the same validator and, only when that passes,
+archives the halt file by renaming it `github-halt-<timestamp>.json` (never deleting it). A read that still fails
+leaves the halt in place (79; a 404 on a non-fixed read is 3). A halt with no replayable read (`forge halt <reason>`,
+an unresolved write outcome, or a record from an older pack) is refused with 79 on BOTH providers: reconcile the
+remote outcome by hand, then archive the file yourself. On GitHub `resume` runs
+`super-board-github-read.py --resume` with the same arguments, so `resume --kind <same-shape> [--meta F] -- <gh read
+args>` still supplies a corrected replacement read; Azure DevOps takes no arguments.
 
 ### Gotchas (observed on a real org)
 
@@ -483,7 +500,12 @@ There is no quota endpoint; the transport saves `X-RateLimit-*` headers (`ado-qu
   an unreadable list keeps every remote branch and says so. It runs with a throwaway halt file.
 - `super-board-setup.py check|fix`: `gh` is not required, a token is; the `ado` block is validated; the board is
   read with `board ensure --check` and set up by `fix`; an empty repository is a must-fix with the exact git
-  commands; the routing labels are tags and need no creation.
+  commands; the routing labels are tags and need no creation. `check --config <file>` validates ONE config, saved or
+  staged (what onboard runs before step 8 saves it): the `ado` block, token source, board shape and
+  repository/base branch on Azure DevOps; verification readiness, host and old keys on GitHub.
+- `super-board-skills-ready.py --hydrate --config <cfg>` reads a card's body and labels with `ticket view` on any
+  non-GitHub provider; without `--config` (or on GitHub) it keeps the guarded `gh` reads. The legacy
+  `super-build-dispatch.sh` does the same when `SB_CONFIG` names a config.
 - `skills/super-collect/scripts/collect_prs.py`: `pr merged` + `pr threads`. The `github` source's open-issue read
   is `ticket list --state open --limit N`.
 - `super-board-run.sh` (legacy `claude-p`) exits 78 on any provider but GitHub.

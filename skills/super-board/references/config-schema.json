@@ -151,9 +151,9 @@
   // "human" explicitly when every merge should require human approval.
   //
   // On the workflow backend, `false` ALSO requires
-  // "Bash(bash .claude/bin/super-board-merge-gate.sh:*)" and "Bash(gh pr merge:*)"
-  // in the session allowlist (onboard offers both as a diff) — without it every Reviewer stalls on an approval prompt
-  // and nothing lands. See references/run-workflow.md → "Mid-run permission prompts".
+  // "Bash(bash .claude/bin/super-board-merge-gate.sh:*)" in the session allowlist (onboard offers
+  // it as a diff). No provider merge command is listed: the gate runs the provider's merge in its
+  // own subprocess. Without that line every Reviewer stalls on an approval prompt and nothing lands. See references/run-workflow.md → "Mid-run permission prompts".
   "human_approves_merge": false,
 
   // Who merges what (v2.6.0). Evaluated by super-board-merge-gate.sh (via
@@ -467,6 +467,10 @@
     "channel": "session",
     "chat_id": null,
 
+    // GITHUB ONLY. On `provider: "azure-devops"` this key is ignored: the claim is a holder tag
+    // (`sb:claimed-<holder>`) and `super-board status` shows the `whoami` login instead; onboard
+    // stages "auto" and `super-board-setup.py check` never flags it missing there.
+    //
     // The assignee identity used as the claim mutex. Read by
     // `super-board status` and `super-board run`. Recorded during onboard
     // step 11 as either `super-board-bot[bot]` (when a GitHub App is

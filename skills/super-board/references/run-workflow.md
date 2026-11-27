@@ -75,12 +75,13 @@ instantaneous process-wide kill. Preserve worktrees, claims, card statuses, and
 approval evidence. Do not move cards to Done/Blocked or release claims using an
 unavailable provider. Report the local saved reason and what remains in flight.
 
-After fixing access or the invalid query, explicitly resume with the read helper's
-`python3 .claude/bin/super-board-github-read.py --resume` (GitHub; an Azure DevOps halt records no
-replayable read, so `--resume` refuses it: recover it like an uncertain write, below). It rechecks the failed read before clearing the marker and archives
-the original reason. Failed recovery leaves the pause intact. When the caller's
-query was corrected or PR metadata changed, supply its current read explicitly:
-`--resume --kind <same-shape> [--meta <fresh-meta.json>] -- <corrected gh read args>`.
+After fixing access or the invalid query, explicitly resume with
+`python3 .claude/bin/super-board-forge.py --config <config> resume` (the same verb on both providers). It
+replays the failed read (GitHub: the helper's `--resume`; Azure DevOps: the method, URL path and validator the
+halt recorded) and archives the original reason only when that read passes. Failed recovery leaves the pause intact.
+A halt that recorded no replayable read (`forge halt <reason>`, an uncertain write) is refused: recover it like an
+uncertain write, below. When the caller's query was corrected or PR metadata changed, supply its current read
+explicitly (GitHub only): `resume --kind <same-shape> [--meta <fresh-meta.json>] -- <corrected gh read args>`.
 The replacement must pass the same evidence validator; the broken saved query
 is retained in the archived record. This is a read-only recovery check. An uncertain write
 has no automatic recovery probe: inspect the remote outcome first, then archive
@@ -367,7 +368,7 @@ don't stall on prompts:
 `tests/test_run_allowlist.py` fails when pre-flight or a lane calls a `.claude/bin`
 script this list does not cover. The forge and the read helper are listed in both forms:
 instructions type `python3 .claude/bin/<script>.py`; a bare `.claude/bin/<script>.py` call
-also matches. The read helper stays for halt recovery (`--resume`) on GitHub; `super-board-card.sh`
+also matches. The read helper stays for the forge's own GitHub reads and `forge resume`; `super-board-card.sh`
 stays for a config-less legacy `/super-build` run on GitHub (super-build → "GitHub: no super-board
 config"). No `gh` rule is
 needed: lanes reach GitHub only through the forge and the bin scripts, which run `gh` themselves.

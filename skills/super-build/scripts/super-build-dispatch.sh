@@ -4,6 +4,8 @@
 # Contract (per .claude/skills/super-build/SKILL.md):
 #   - Arg: issue number N
 #   - Env: BASE_BRANCH (required) — the branch the worktree is created from
+#          SB_CONFIG   (optional) — the project config: the ticket is then read through
+#                        super-board-forge.py (any provider); unset keeps the GitHub read helper
 #          REPO_DIR    (optional) — defaults to PWD; the working repo root
 #          SKILL_DIR   (optional) — defaults to the dir this script lives in's parent
 #          MAX_TURNS   (optional) — default 250
@@ -97,12 +99,23 @@ fi
 
 # Compose the worker prompt: preamble + issue body + working-dir footer
 SB_BIN="$REPO_DIR/.claude/bin"
-ISSUE_JSON=$(python3 "$SB_BIN/super-board-github-read.py" --kind issue -- issue view "$N" --json number,title,body 2>&1) || {
-  echo "error: gh issue view #$N failed:" >&2
-  echo "$ISSUE_JSON" >&2
-  exit 79
-}
-LABELS_JSON=$(python3 "$SB_BIN/super-board-github-read.py" --kind json -- issue view "$N" --json labels) || exit $?
+if [[ -n "${SB_CONFIG:-}" ]]; then
+  # A project config names the provider: one forge read has the body and the labels on GitHub and Azure DevOps.
+  ISSUE_JSON=$(python3 "$SB_BIN/super-board-forge.py" --config "$SB_CONFIG" ticket view "$N" 2>&1) || {
+    rc=$?
+    echo "error: forge ticket view #$N failed:" >&2
+    echo "$ISSUE_JSON" >&2
+    exit "$rc"
+  }
+  LABELS_JSON=$(printf '%s' "$ISSUE_JSON" | jq -c '{labels: (.labels // [])}') || exit $?
+else
+  ISSUE_JSON=$(python3 "$SB_BIN/super-board-github-read.py" --kind issue -- issue view "$N" --json number,title,body 2>&1) || {
+    echo "error: gh issue view #$N failed:" >&2
+    echo "$ISSUE_JSON" >&2
+    exit 79
+  }
+  LABELS_JSON=$(python3 "$SB_BIN/super-board-github-read.py" --kind json -- issue view "$N" --json labels) || exit $?
+fi
 CARD_JSON=$(printf '%s' "$ISSUE_JSON" | jq -c --argjson labels "$LABELS_JSON" '[{number:.number,status:"Ready",body:.body,labels:($labels.labels // [])}]')
 SKILLS_RC=0
 printf '%s' "$CARD_JSON" | python3 "$SB_BIN/super-board-skills-ready.py" --root "$REPO_DIR" --host claude --cards - --lane build || SKILLS_RC=$?

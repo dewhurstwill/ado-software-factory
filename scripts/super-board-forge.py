@@ -18,7 +18,7 @@ the config (as the scripts always did); `repo` also falls back to origin.
 Every verb answers in the same stdout shape, flags and exit codes on both providers; the full table (shapes,
 the `gh` commands each replaces, the few honest differences) is providers.md. Ids are opaque strings.
 
-  provider | repo [--explicit] | check | halt <reason> | whoami | quota | repository | permission <login>
+  provider | repo [--explicit] | check | halt <reason> | resume | whoami | quota | repository | permission <login>
   ticket    view <N> | list [--state open|closed|all] [--label L]... [--limit N] | graph | history |
             create --title T --body-file F [--label L]... [--column C] | edit <N> [--title] [--body-file]
             [--add-label L]... [--remove-label L]... | close <N> --reason completed|not-planned |
@@ -154,6 +154,7 @@ class Backend:
 
     def check(self, argv): self.unavailable('check')
     def halt(self, argv): self.unavailable('halt')
+    def resume(self, argv): self.unavailable('resume')
     def pr_head(self, argv): self.unavailable('pr head')
     def pr_state(self, argv): self.unavailable('pr state')
     def pr_metadata(self, argv): self.unavailable('pr metadata')
@@ -247,6 +248,14 @@ class GitHubBackend(forge_github.GhVerbs, Backend):
         p = parser('halt <reason>')
         p.add_argument('reason')
         github_read.halt(p.parse_args(argv).reason, 1)
+
+    def resume(self, argv):
+        # Exactly the helper's own recovery: its `--resume` replays the saved read (or, given
+        # `--kind K [--meta F] -- <gh args>`, a replacement read of the same kind), then archives the halt.
+        sys.stdout.flush()
+        rc = subprocess.run([sys.executable, str(HERE / 'super-board-github-read.py'), '--resume', *argv]).returncode
+        if rc:
+            raise ForgeError('', rc)
 
     def pr_head(self, argv):
         p = parser('pr head <N>'); p.add_argument('number', type=positive)
@@ -427,6 +436,7 @@ BACKENDS = {'github': GitHubBackend, 'azure-devops': AzureDevOpsBackend}
 DISPATCH = {
     ('check',): 'check',
     ('halt',): 'halt',
+    ('resume',): 'resume',
     ('pr', 'head'): 'pr_head',
     ('pr', 'state'): 'pr_state',
     ('pr', 'metadata'): 'pr_metadata',

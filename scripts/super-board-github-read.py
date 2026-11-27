@@ -431,6 +431,9 @@ def main():
                 operation = record.get('operation')
                 if not isinstance(operation, dict):
                     raise ReadHalted('saved failure needs manual outcome reconciliation before restart')
+                if operation.get('provider') not in (None, 'github'):
+                    raise ReadHalted('saved failure is a read on another provider; replay it with '
+                                     'super-board-forge.py resume (it follows the config\'s provider)')
                 if command:
                     if args.kind != operation['kind']:
                         raise ValueError('replacement recovery read must validate the same evidence kind')

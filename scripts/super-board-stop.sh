@@ -55,6 +55,7 @@ if [ ! -f "$CONFIG_PATH" ]; then
 fi
 
 # ───────────────────────────── config read ─────────────────────────────
+# GitHub only: the assignee to remove. Azure DevOps claims with a tag and never reads it.
 BOT_LOGIN=$(jq -r '.notifications.bot_identity // .bot_identity // ""' "$CONFIG_PATH")
 PROVIDER=$(jq -r '.provider // "github"' "$CONFIG_PATH" | tr -d '\r')
 FORGE_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/super-board-forge.py"

@@ -5,6 +5,8 @@ Onboard asks the questions; this script finds things out and fixes the must-have
 so step 1 (Checks) can say "Fixed for you" without asking anything.
 
     super-board-setup.py check   [--root DIR] [--pack DIR]            what is missing / old (read-only)
+    super-board-setup.py check   --config FILE [--root DIR] [--host H] validate ONE config, saved or staged
+                                                                       (Azure DevOps: ado block, token, board, repository)
     super-board-setup.py fix     [--root DIR] [--pack DIR] [--no-helpers] [--dry-run]
                                                                        apply every must-have, then re-check
     super-board-setup.py migrate-config <config.json> [--dry-run]     old config keys → v3 keys
@@ -344,11 +346,12 @@ def ado_token_source(root, cfg):
     for base in dict.fromkeys([(cfg.get("repo") or {}).get("path") or "", root]):
         if not base:
             continue
-        text = read(os.path.join(base, ".env"))
-        for line in text.splitlines():
-            m = re.match(rf"\s*(?:export\s+)?{ADO_PAT_VAR}\s*=\s*(.*?)\s*$", line)
-            if m and m.group(1).strip("\"'"):
-                return ".env"
+        for name in (".env", ".env.local"):  # the forge's lookup order
+            text = read(os.path.join(base, name))
+            for line in text.splitlines():
+                m = re.match(rf"\s*(?:export\s+)?{ADO_PAT_VAR}\s*=\s*(.*?)\s*$", line)
+                if m and m.group(1).strip("\"'"):
+                    return name
     az = shutil.which("az")
     if az:
         try:
@@ -395,7 +398,7 @@ def check_ado(root, config_path, cfg, network=True):
     out["credentials"] = ado_token_source(root, cfg)
     if not out["credentials"]:
         out["errors"].append("no Azure DevOps credentials: set AZURE_DEVOPS_EXT_PAT in the environment or in the project's "
-                             ".env, or run `az login`")
+                             ".env (or .env.local), or run `az login`")
         return out
     if not network:
         return out
@@ -428,6 +431,41 @@ def check_ado(root, config_path, cfg, network=True):
 
 def installed_version(root):
     return read(os.path.join(root, ".claude", "skills", "super-board", "VERSION")) or None
+
+
+def check_config(root, config_path, host="claude"):
+    """Validate ONE config file, saved or staged (onboard checks a staged config before it is saved):
+    Azure DevOps = the `ado` block, token, board shape (`board ensure --check`) and repository/base
+    branch (the same `check_ado` the saved-config check runs); GitHub = the per-config checks `check`
+    runs (verification readiness, host, old keys). Read-only; the install itself is not looked at."""
+    config_path = os.path.abspath(config_path)
+    cfg = load_json(config_path)
+    res = {"config": config_path, "root": root, "git": is_git_repo(root), "ok": [], "configs": {}, "verification": {},
+           "host_errors": {}, "ado": {}}
+    if not isinstance(cfg, dict):
+        res.update(error="config unreadable or not a JSON object", green=False)
+        return res
+    provider = provider_of(cfg)
+    res["provider"] = provider
+    if provider not in ("github", "azure-devops"):
+        res["host_errors"][config_path] = f'provider "{provider}" must be github or azure-devops'
+    if "host" in cfg and cfg["host"] not in HOSTS:
+        res["host_errors"][config_path] = f"host \"{cfg['host']}\" must be one of {', '.join(HOSTS)}"
+    if provider == "azure-devops":
+        res["ado"][config_path] = check_ado(root, config_path, cfg)
+        if not res["ado"][config_path]["errors"]:
+            res["ok"].append(f"Azure DevOps ready: credentials from {res['ado'][config_path]['credentials']}, board, repository")
+    elif provider == "github":
+        ready = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "super-board-verification-ready.py"), "--config", config_path],
+                               capture_output=True, text=True, encoding="utf-8")
+        if ready.returncode:
+            res["verification"][config_path] = ready.stderr.strip()
+        _, changes = migrate_config(cfg, host)
+        if changes:
+            res["configs"][config_path] = changes
+    res["green"] = not (res["host_errors"] or res["verification"] or res["configs"] or any(r["errors"] for r in res["ado"].values()))
+    return res
 
 
 def check(root, pack, host="claude", home=None, catalog=None):
@@ -659,6 +697,8 @@ def text_report(res):
             lines.append(f"  ✗ missing {entry['name']} for {res['helper_readiness']['host']}; install it in that host and restart")
     if res.get("helper_readiness", {}).get("error"):
         lines.append("  ✗ " + res["helper_readiness"]["error"])
+    if res.get("config") and res.get("error"):
+        lines.append(f"  ✗ {res['config']}: {res['error']}")
     for path, error in {**res.get("verification", {}), **res.get("host_errors", {})}.items():
         lines.append(f"  ✗ {path}: {error}")
     for path, report in res.get("ado", {}).items():
@@ -1166,6 +1206,15 @@ def main(argv):
     dry = "--dry-run" in rest
     try:
         if cmd in ("check", "fix"):
+            if cmd == "check" and flag(rest, "--config"):
+                host = flag(rest, "--host", "claude")
+                if host not in ("claude", "codex"):
+                    raise ValueError("--host must be claude or codex")
+                res = check_config(root, flag(rest, "--config"), host)
+                if "--text" in rest:
+                    print(text_report(res))
+                    return 0 if res["green"] else 1
+                return out(res, 0 if res["green"] else 1)
             pack = find_pack(flag(rest, "--pack"))
             host, home, catalog = flag(rest, "--host", "claude"), flag(rest, "--home", os.environ.get("SUPER_BOARD_SKILLS_HOME")), flag(rest, "--catalog", os.environ.get("SUPER_BOARD_SKILLS_CATALOG"))
             if host not in ("claude", "codex"):

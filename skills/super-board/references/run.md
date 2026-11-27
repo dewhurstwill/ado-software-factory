@@ -27,7 +27,7 @@ the reason locally when the provider cannot accept a comment. Do not blindly ret
 mutation: a lost response may conceal a successful write. Confirm its remote
 outcome once service is available before resuming. Only pass a ticket or PR number you read from the
 board or an earlier command: a missing number exits 3 on Azure DevOps but halts the run (79) on GitHub.
-Recovery and workflow checkpoint limitations: [run-workflow.md](run-workflow.md#required-evidence-and-a-paused-run).
+Restart after exit 79 with `forge resume` (it replays the failed read on either provider and archives the halt only when it passes; a halt from an uncertain write is refused). Recovery and workflow checkpoint limitations: [run-workflow.md](run-workflow.md#required-evidence-and-a-paused-run).
 
 ## Orchestrator delegation contract (NON-NEGOTIABLE)
 

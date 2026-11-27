@@ -52,8 +52,9 @@ checkout, then re-run onboard.`
 | Script | Used in |
 |---|---|
 | `python3 $SB/super-board-setup.py check / fix --text` | 1 Checks |
+| `python3 $SB/super-board-setup.py check --config <staged config> --text` | 2, 3, 4 (Azure DevOps): one staged config, before it is saved |
 | `python3 $SB/super-board-setup.py board-rank / board-migrate / names` | 1 (upgrade), 3 Board (GitHub) |
-| `python3 $SB/super-board-forge.py --config <staged config> whoami / repository / board ensure [--check]` | 2, 3, 4 (Azure DevOps) |
+| `python3 $SB/super-board-forge.py --config <staged config> whoami / board ensure` | 2, 3 (Azure DevOps: the login, and the fix for a board the check found wanting) |
 
 Onboard runs every forge call with a throwaway halt file in front, as `super-board-setup.py` does —
 `SB_GITHUB_HALT_FILE="$(mktemp -d)/halt.json" python3 $SB/super-board-forge.py …` — so a rejected
@@ -254,10 +255,10 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
 
 2b. 🔑 AZURE DEVOPS — no `gh`; a token instead
    ├─ Token, first that exists (the forge's order): AZURE_DEVOPS_EXT_PAT in the environment; the
-   │    line AZURE_DEVOPS_EXT_PAT=… in the project's .env (name only:
-   │    bash $SB/super-board-env-check.sh --file .env AZURE_DEVOPS_EXT_PAT); a working `az login`.
+   │    line AZURE_DEVOPS_EXT_PAT=… in the project's .env, then its .env.local (name only:
+   │    bash $SB/super-board-env-check.sh AZURE_DEVOPS_EXT_PAT, which looks in both); a working `az login`.
    │    None → one line, no AskUserQuestion: "Create a personal access token with Work Items: Read &
-   │    write and Code: Read & write, and add AZURE_DEVOPS_EXT_PAT=<token> to .env yourself (or run
+   │    write and Code: Read & write, and add AZURE_DEVOPS_EXT_PAT=<token> to .env (or .env.local) yourself (or run
    │    `az login`). Answers are saved — re-run onboard." The token is NEVER typed, read or printed
    │    by the agent.
    ├─ Stage the `ado` block (config-schema.json → `ado`; providers.md → "Config") from the remote
@@ -278,8 +279,13 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    │    listed. A separate identity for the agent: second-account.md → "Azure DevOps".
    ├─ No remote → "Create the repository in Azure Repos and add it as origin, then re-run
    │    onboard." (No repository is created for you.)
-   └─ bot_identity: stage "auto". Azure DevOps claims with a tag (`sb:claimed-<holder>`), never
-      an assignee, so no claim login is chosen here.
+   ├─ One call checks the staged config end to end (the `ado` block, the token's source, the
+   │    board shape, the repository and base branch; nothing is written):
+   │    python3 $SB/super-board-setup.py check --config <staged config> --text
+   │    Every red line is a step-3/4 item below; re-run it after each fix.
+   └─ bot_identity: stage "auto". It is GitHub-only: Azure DevOps claims with a tag
+      (`sb:claimed-<holder>`), never an assignee, so the key is ignored and no claim login is chosen
+      here (status shows the `whoami` login).
 
 3. 🗂️ BOARD — one question: which board (GitHub; Azure DevOps below)
    ├─ One checklist line, one labels line, no question about either:
@@ -302,8 +308,9 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
       In Progress; labels). Prints its URL.
    Azure DevOps — no "Which board?" question: the board is the team's board in the staged `ado`
    block (`team`, `board`); the columns are a must-have, fixed with no question:
-   ├─ python3 $SB/super-board-forge.py --config <staged config> board ensure --check → one
-   │    `needed:` line per change (exit 1), or `board ok: …` (exit 0).
+   ├─ python3 $SB/super-board-setup.py check --config <staged config> --text → the board's changes
+   │    as one red `the board needs changes: …` line, or nothing for the board (it runs
+   │    `board ensure --check` itself).
    ├─ Changes needed → python3 $SB/super-board-forge.py --config <staged config> board ensure →
    │    one `changed:` line each: exactly Backlog · Ready · Building · QA · Review · Blocked · Done
    │    (existing column ids reused, so cards keep their column), and Bugs shown on the board
@@ -328,9 +335,9 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    ├─ Create staging → Bash(git push origin main:staging) right away (the pick is the OK).
    ├─ main kept with a deploy signal → step 6 defaults to "you merge everything", target_env "live".
    └─ Azure DevOps, before the question:
-      ├─ python3 $SB/super-board-forge.py --config <staged config> repository → `empty: true` means
-      │    the Azure Repos repository has no branch and no PR can be opened. Show setup's exact
-      │    fix: `git checkout -b <base> && git commit --allow-empty -m "Initial commit" && git push
+      ├─ python3 $SB/super-board-setup.py check --config <staged config> --text → an empty Azure Repos
+      │    repository (no branch, so no PR can be opened) or a missing base branch is a red line
+      │    with setup's exact fix: `git checkout -b <base> && git commit --allow-empty -m "Initial commit" && git push
       │    -u origin <base>` (a clone with commits: `git push -u origin HEAD:<base>`), then re-run.
       └─ One dim line under the question: "A branch policy on <base> that requires a reviewer or
          a build means a person completes every PR: the merge gate stops with a human-gate line
@@ -573,7 +580,7 @@ remove a pending recovery record; use its saved state to reconcile a conflict be
 ## Worker self-check (mandatory before the 🎉 screen)
 
 1. **Config validates** — `.claude/super-board/configs/<slug>.json` parses, has every required
-   field from `config-schema.json` (incl. `notifications.bot_identity`, `merge_policy`,
+   field from `config-schema.json` (incl. `notifications.bot_identity` on GitHub, ignored on Azure DevOps; `merge_policy`,
    `migrations`), has no `variant`, and `columns` is the seven.
 2. **Active pointer** — `.claude/super-board/active` holds exactly the slug + `\n`.
 3. **Board columns and labels** — GitHub: `gh project field-list <n> --owner <o>` returns Backlog, Ready,

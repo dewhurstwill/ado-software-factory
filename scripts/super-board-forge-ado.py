@@ -41,6 +41,7 @@ API_COMMENTS = '7.1-preview.4'
 API_IDENTITY = '7.1-preview'
 ARM_RESOURCE = '499b84ac-1321-427f-aa17-267ca6975798'
 PAT_VAR = 'AZURE_DEVOPS_EXT_PAT'
+ENV_FILES = ('.env', '.env.local')  # token lookup order after the environment variable
 EXIT_NOT_FOUND, EXIT_CLAIMED, EXIT_REFUSED, EXIT_FAILED = 3, 4, 65, 69
 # When columns are reused for stages that do not match by name or state, prefer these
 # slots first (later stages: cards there are furthest along).
@@ -361,8 +362,8 @@ class AdoVerbs:
             raise forge.github_read.ReadHalted('Azure DevOps reads are halted; inspect the saved reason and '
                                                'explicitly restart the run')
 
-    def stop(self, reason, attempts):
-        forge.github_read.halt(reason, attempts)
+    def stop(self, reason, attempts, operation=None):
+        forge.github_read.halt(reason, attempts, operation)
 
     def check(self, argv):
         self.check_halt()
@@ -374,19 +375,22 @@ class AdoVerbs:
 
     # ---- auth ---------------------------------------------------------------------------------
     def pat_from_env_file(self):
-        path = Path((self.config.get('repo') or {}).get('path') or os.environ.get('SB_REPO_PATH') or '.') / '.env'
-        try:
-            text = path.read_text(encoding='utf-8')
-        except OSError:
-            return ''
-        for line in text.splitlines():
-            m = re.match(rf'\s*(?:export\s+)?{PAT_VAR}\s*=\s*(.*?)\s*$', line)
-            if m:
-                value = m.group(1)
-                if len(value) >= 2 and value[0] == value[-1] and value[0] in '"\'':
-                    value = value[1:-1]
-                if value:
-                    return value
+        """The PAT from `<repo.path>/.env`, else `<repo.path>/.env.local` (the same two files
+        super-board-env-check.sh looks in); the first non-empty line wins."""
+        root = Path((self.config.get('repo') or {}).get('path') or os.environ.get('SB_REPO_PATH') or '.')
+        for name in ENV_FILES:
+            try:
+                text = (root / name).read_text(encoding='utf-8')
+            except OSError:
+                continue
+            for line in text.splitlines():
+                m = re.match(rf'\s*(?:export\s+)?{PAT_VAR}\s*=\s*(.*?)\s*$', line)
+                if m:
+                    value = m.group(1)
+                    if len(value) >= 2 and value[0] == value[-1] and value[0] in '"\'':
+                        value = value[1:-1]
+                    if value:
+                        return value
         return ''
 
     @staticmethod
@@ -414,7 +418,7 @@ class AdoVerbs:
                 self._auth = 'Bearer ' + token
         if not self._auth:
             raise forge.ForgeError(f'no Azure DevOps credentials: set {PAT_VAR} in the environment, or put a line '
-                                   f'{PAT_VAR}=... in <repo>/.env, or run `az login` so `az account get-access-token` works',
+                                   f'{PAT_VAR}=... in <repo>/.env (or .env.local), or run `az login` so `az account get-access-token` works',
                                    forge.EXIT_UNAVAILABLE)
         return self._auth
 
@@ -488,13 +492,58 @@ class AdoVerbs:
     def pause(seconds):
         time.sleep(seconds * float(os.environ.get('SB_ADO_SLEEP_SCALE', '1')))
 
-    def read(self, method, url, body=None, validate=None, fixed=True, what='read'):
-        """Three attempts; permanent errors and exhausted attempts halt (79)."""
-        self.check_halt()
+    def read_operation(self, method, url, body, validate, fixed, what):
+        """What a halt record keeps so `resume` can replay the failed read: method, the URL path under
+        the organization (no host, no credentials: those come from the config and the token again), the
+        JSON body of a POST read (WIQL, batch), the NAME of the validator and the read's own flags."""
+        base = self.base.rstrip('/')
+        if not url.startswith(base + '/'):
+            return None  # not under this organization: nothing safe to replay
+        name = getattr(validate, '__name__', None) if validate else None
+        return {'provider': 'azure-devops', 'method': method, 'path': url[len(base):], 'body': body,
+                'validate': name, 'fixed': bool(fixed), 'what': what}
+
+    def validator_named(self, name):
+        if name is None:
+            return None
+        found = getattr(forge.forge_ado, name, None) or getattr(forge.forge_ado_pr, name, None)
+        if not (isinstance(name, str) and name.startswith('v_') and callable(found)):
+            raise forge.github_read.ReadHalted(f'saved read names an unknown validator ({name}); '
+                                               'it needs manual reconciliation before restart')
+        return found
+
+    def resume(self, argv):
+        """Replay the read that halted the run; only when it succeeds archive the halt file (renamed with a
+        timestamp, never deleted), as `super-board-github-read.py --resume` does for GitHub. A halt with no
+        replayable read (`halt <reason>`: an unresolved write outcome) is refused."""
+        forge.parser('resume').parse_args(argv)
+        path = forge.github_read.halt_path()
+        if not path.exists():
+            return
+        try:
+            record = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            record = None
+        op = record.get('operation') if isinstance(record, dict) else None
+        if not (isinstance(op, dict) and op.get('provider') == 'azure-devops' and op.get('method') in ('GET', 'POST')
+                and isinstance(op.get('path'), str) and op['path'].startswith('/') and '://' not in op['path']
+                and (op.get('body') is None or isinstance(op['body'], dict))):
+            raise forge.github_read.ReadHalted('saved failure needs manual outcome reconciliation before restart')
+        validate = self.validator_named(op.get('validate'))
+        self.read(op['method'], self.base.rstrip('/') + op['path'], op.get('body'), validate,
+                  op.get('fixed', True) is not False, str(op.get('what') or 'read'), recovering=True)
+        path.replace(path.with_name(f'github-halt-{time.time_ns()}.json'))
+
+    def read(self, method, url, body=None, validate=None, fixed=True, what='read', recovering=False):
+        """Three attempts; permanent errors and exhausted attempts halt (79). `recovering` is `resume`'s
+        replay: it ignores the halt file it is clearing."""
+        check_halt = (lambda: None) if recovering else self.check_halt
+        operation = self.read_operation(method, url, body, validate, fixed, what)
+        check_halt()
         delay = float(os.environ.get('SB_GITHUB_RETRY_DELAY', '1'))
         last = 'Azure DevOps required read failed'
         for attempt in (1, 2, 3):
-            self.check_halt()
+            check_halt()
             wait = None
             try:
                 status, hdrs, raw = self.request(method, url, body)
@@ -503,7 +552,7 @@ class AdoVerbs:
             else:
                 if status in (203, 302, 400, 401, 403) or (status == 404 and fixed):
                     self.stop(f'Azure DevOps rejected a required read ({what}: HTTP {status}); fix credentials, '
-                              'permissions or config before restarting', attempt)
+                              'permissions or config before restarting', attempt, operation)
                 if status == 404:
                     raise forge.ForgeError(f'{what}: not found (HTTP 404)', EXIT_NOT_FOUND)
                 if status == 429:
@@ -517,7 +566,7 @@ class AdoVerbs:
                         value = json.loads(raw.decode('utf-8'))
                         if validate:
                             validate(value)
-                        self.check_halt()
+                        check_halt()
                         return value
                     except (ValueError, KeyError, TypeError, AttributeError, IndexError) as error:
                         last = f'Azure DevOps required read returned incomplete evidence: {error}'
@@ -530,7 +579,7 @@ class AdoVerbs:
                     self.pause(wait)
                 else:
                     time.sleep(max(0, delay) * attempt)
-        self.stop(f'{last}; stopped after 3 failed attempts', 3)
+        self.stop(f'{last}; stopped after 3 failed attempts', 3, operation)
 
     def write(self, method, url, body, what, content_type='application/json'):
         """One attempt, never retried. Returns (status, parsed json or None, text)."""

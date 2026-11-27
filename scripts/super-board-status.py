@@ -465,7 +465,7 @@ class AdoReader:
         def never_halt(*_a: Any) -> None:
             return None
 
-        def fail(reason: str, _attempts: int) -> None:
+        def fail(reason: str, *_attempts: Any) -> None:
             raise RuntimeError(reason)
 
         self.backend.check_halt = never_halt  # type: ignore[method-assign]
@@ -489,6 +489,14 @@ class AdoReader:
             }
             for it in data.get("items", [])
         ]
+
+    def identity(self) -> str:
+        """The authenticated Azure DevOps login (`whoami`): what a claim tag shows as the assignee.
+        `notifications.bot_identity` is GitHub-only and ignored here. '?' when it cannot be read."""
+        try:
+            return str(self.backend.whoami().get("login") or "?")
+        except Exception:
+            return "?"
 
     def newest_comment(self, number: int) -> str | None:
         """Body of the newest comment (the reason tag), or None when it cannot be read."""
@@ -731,7 +739,7 @@ def main() -> int:
     tg = cfg.get("truth_gate", "off")
     tt = cfg.get("truth_threshold", 70)
     gate_label = {"off": "off", "always": "always"}.get(tg, f"non-trivial (≥{tt})")
-    bot_login = (
+    bot_login = ado.identity() if ado is not None else (
         cfg.get("notifications", {}).get("bot_identity")
         or cfg.get("claim", {}).get("assignee_login")
         or "?"

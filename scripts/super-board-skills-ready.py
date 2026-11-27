@@ -2,7 +2,7 @@
 """Resolve the actual host-visible worker chain. Read-only; exits 10 if incomplete.
 
 --cards accepts an array file or stdin (-). --hydrate fills absent issue bodies via
-our guarded GitHub reader before resolution. --profile setup checks the pack and
+our guarded GitHub reader (or, with --config naming another provider, the forge's `ticket view`) before resolution. --profile setup checks the pack and
 unconditional helper union. --home and --catalog isolate authoritative inventories.
 No directory, lockfile, or plugin cache is evidence of an available skill.
 """
@@ -419,15 +419,41 @@ def report(root, host, cards=None, profile=None, lane=None, require=(), home=Non
                 remediation='Install the exact missing skills in a visible host surface or supply an enabled active catalog, then restart explicitly.')
 
 
-def hydrate(cards, root):
+def config_text_if_forge(config):
+    """The config's text when it names a provider other than GitHub (read once: it may be a FIFO), else None.
+    GitHub and "no config" keep the original guarded `gh` reads."""
+    if not config:
+        return None
+    try:
+        text = Path(config).read_text(encoding='utf-8')
+        provider = json.loads(text).get('provider', 'github')
+    except (OSError, ValueError, AttributeError) as error:
+        raise ValueError(f'config unreadable: {config}: {error}')
+    return text if provider != 'github' else None
+
+
+def hydrate(cards, root, config=None):
     helper = Path(__file__).with_name('super-board-github-read.py')
+    forge = Path(__file__).with_name('super-board-forge.py')
+    config_text = config_text_if_forge(config)
+    viewed = {}
     def read_issue(number, kind, fields):
-        process = subprocess.run([sys.executable, str(helper), '--kind', kind, '--', 'issue', 'view', str(number),
-                                  '--json', fields], cwd=root, text=True, capture_output=True)
+        if config_text is not None and number in viewed:
+            return viewed[number]
+        if config_text is not None:
+            # Provider-neutral: one forge read has the body and the labels ({name} objects) on every provider.
+            process = subprocess.run([sys.executable, str(forge), '--config', '-', 'ticket', 'view', str(number)],
+                                     cwd=root, input=config_text, text=True, encoding='utf-8', capture_output=True)
+        else:
+            process = subprocess.run([sys.executable, str(helper), '--kind', kind, '--', 'issue', 'view', str(number),
+                                      '--json', fields], cwd=root, text=True, capture_output=True)
         if process.returncode:
             print(process.stderr, file=sys.stderr, end='')
             raise SystemExit(process.returncode)
-        return json.loads(process.stdout)
+        data = json.loads(process.stdout)
+        if config_text is not None:
+            viewed[number] = data
+        return data
     for card in cards:
         if not isinstance(card, dict) or type(card.get('number')) is not int or card['number'] < 1:
             raise ValueError('card needs a positive number before issue hydration')
@@ -463,6 +489,7 @@ def main(argv=None):
     parser.add_argument('--home', default=os.environ.get('SUPER_BOARD_SKILLS_HOME'))
     parser.add_argument('--catalog', default=os.environ.get('SUPER_BOARD_SKILLS_CATALOG'))
     parser.add_argument('--hydrate', action='store_true')
+    parser.add_argument('--config', help='project config: names the provider for --hydrate (GitHub when absent)')
     args = parser.parse_args(argv)
     try:
         for name in args.require:
@@ -473,7 +500,7 @@ def main(argv=None):
         if cards is not None and not isinstance(cards, list):
             raise ValueError('cards must be an array')
         if args.hydrate and cards is not None:
-            hydrate(cards, args.root)
+            hydrate(cards, args.root, args.config)
         result = report(args.root, args.host, cards, args.profile, args.lane, args.require, args.home, args.catalog)
         print(json.dumps(result))
         for entry in result['entries']:

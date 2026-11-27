@@ -155,7 +155,7 @@ try:
     spec = importlib.util.spec_from_file_location('skills_ready', resolver_path)
     resolver = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(resolver)
-    resolver.hydrate([card], root)
+    resolver.hydrate([card], root, str(config_path))
     skills = resolver.report(root, backend.name, [card], lane=args.lane,
                              home=os.environ.get('SUPER_BOARD_SKILLS_HOME'), catalog=os.environ.get('SUPER_BOARD_SKILLS_CATALOG'))
 except SystemExit as error:
