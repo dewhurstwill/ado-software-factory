@@ -17,7 +17,9 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/src/super-board-test"
 tar -cf - --exclude ./.git --exclude ./evals --exclude ./docs . | tar -xf - -C "$WORK/src/super-board-test"
 tar -czf "$WORK/pack.tgz" -C "$WORK/src" super-board-test
-export SUPER_BOARD_TARBALL="file://$WORK/pack.tgz"
+# A native curl (Windows) needs the drive form: file:///C:/…
+FILE_WORK="$WORK"; if [ -n "${SB_WINDOWS:-}" ] && command -v cygpath >/dev/null; then FILE_WORK="/$(cygpath -m "$WORK")"; fi
+export SUPER_BOARD_TARBALL="file://$FILE_WORK/pack.tgz"
 
 # Stubs: npx records its argv; gh and jq exist so no warnings fire.
 mkdir -p "$WORK/bin"
@@ -91,7 +93,7 @@ if bash "$GET" --bogus --no-helper-skills --target "$T" >/dev/null 2>&1; then fa
 # 7 — a bad tarball URL fails cleanly and leaves no temp folder behind.
 T="$WORK/t7"; mkdir -p "$T"
 mkdir -p "$WORK/tmp7"
-if TMPDIR="$WORK/tmp7" SUPER_BOARD_TARBALL="file://$WORK/nope.tgz" bash "$GET" --no-helper-skills --target "$T" >/dev/null 2>&1; then
+if TMPDIR="$WORK/tmp7" SUPER_BOARD_TARBALL="file://$FILE_WORK/nope.tgz" bash "$GET" --no-helper-skills --target "$T" >/dev/null 2>&1; then
   fail "missing tarball was accepted"
 fi
 [ -z "$(ls -A "$WORK/tmp7")" ] || fail "temp folder was left behind after a failed download"

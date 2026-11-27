@@ -20,6 +20,10 @@
 #                only MSYS programs can open) to a temp file for the native program.
 #   PYTHONUTF8   exported 1: Python's files and pipes default to UTF-8, not the
 #                ANSI code page.
+#   MSYS         exported with winsymlinks:nativestrict (`ln -s` makes a real link or
+#                fails, instead of silently copying) and noglob (a Git Bash started by
+#                Python must not glob/brace-expand its arguments: a JSON card argument
+#                {"a":1,"b":2} would split in two).
 #   sb_exec_python  use instead of `exec python3 …`: exec cannot run a function.
 #   SB_BASH      exported Windows path of this bash, for Python that runs a
 #                shell-script tool (see super-board-compat.py).
@@ -116,6 +120,11 @@ if [ -z "${SB_BASH:-}" ] && command -v cygpath >/dev/null 2>&1; then
   SB_BASH=$(cygpath -w "${BASH:-/usr/bin/bash}" 2>/dev/null) || SB_BASH=
   export SB_BASH
 fi
+# MSYS `ln -s` silently copies when it cannot make a link; a real link or a failure
+# lets install.sh tell the two apart (it copies, and says so, when linking fails).
+case " ${MSYS:-} " in *winsymlinks*) ;; *) MSYS="${MSYS:+$MSYS }winsymlinks:nativestrict" ;; esac
+case " ${MSYS:-} " in *glob*) ;; *) MSYS="$MSYS noglob" ;; esac
+export MSYS
 # Python and other native programs write text files with UTF-8 only when told.
 export PYTHONUTF8="${PYTHONUTF8:-1}"
 

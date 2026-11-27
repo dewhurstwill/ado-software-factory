@@ -54,7 +54,7 @@ class AdoCase(unittest.TestCase):
         self.cache = self.root / 'cache'
         self.env = {k: v for k, v in os.environ.items()
                     if k not in ('SB_CONFIG', 'AZURE_DEVOPS_EXT_PAT', 'SB_REPO_PATH', 'GH_REPO', 'FAKE_AZ_TOKEN')}
-        self.env.update(PATH=f'{self.bin}:{os.environ["PATH"]}', SB_ADO_BASE_URL=self.url,
+        self.env.update(PATH=f'{self.bin}{os.pathsep}{os.environ["PATH"]}', SB_ADO_BASE_URL=self.url,
                         AZURE_DEVOPS_EXT_PAT=PAT, SB_GITHUB_HALT_FILE=str(self.halt),
                         SB_CARD_CACHE_DIR=str(self.cache), SB_GITHUB_RETRY_DELAY='0', SB_ADO_SLEEP_SCALE='0')
         self.ado = {'organization': 'https://dev.azure.com/example', 'project': 'Factory', 'team': 'Factory Team',

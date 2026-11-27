@@ -607,7 +607,7 @@ def hook_event():
     if sys.stdin.isatty():
         return None
     try:
-        ev = json.loads(sys.stdin.read() or "{}").get("hook_event_name")
+        ev = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace") or "{}").get("hook_event_name")  # UTF-8 whatever the code page
         return ev if ev in ("SessionStart", "PostToolUse") else None
     except ValueError:
         return None

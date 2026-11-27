@@ -29,6 +29,12 @@ import sys
 
 WINDOWS = os.name == 'nt'
 
+if WINDOWS and 'glob' not in os.environ.get('MSYS', ''):
+    # A Git Bash started from a Windows program globs and brace-expands its command
+    # line: a JSON argument {"a":1,"b":2} would arrive as two words. noglob stops that
+    # for every bash this process starts (super-board-compat.sh exports it too).
+    os.environ['MSYS'] = (os.environ.get('MSYS', '') + ' noglob').strip()
+
 
 class ToolMissing(FileNotFoundError):
     """The named tool is not on PATH (or the given path does not exist)."""

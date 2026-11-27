@@ -84,7 +84,9 @@ const warnings = []
 // (scripts/detect.mjs, scripts/context.mjs); v4.4+ ships a launcher
 // (scripts/impeccable <verb>). Accept a skill dir, the launcher, or any file
 // inside scripts/, and normalise to {layout, skillDir, detect, context}.
-const sh = (p) => (/^[\w@%+=:,./-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`)
+// Windows: C:/x/y, which Git Bash runs as is (C:\\x\\y would need quoting).
+const slash = (p) => (process.platform === 'win32' ? p.replace(/\\/g, '/') : p)
+const sh = (q) => { const p = slash(q); return (/^[\w@%+=:,./-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`) }
 const resolveImpeccable = (p) => {
   if (!p) return null
   let dir = path.resolve(p)

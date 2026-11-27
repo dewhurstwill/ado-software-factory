@@ -2,6 +2,7 @@
 """Exercise project-map inspection and selection through the shipped CLI."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -93,8 +94,10 @@ class ProjectVerifier(unittest.TestCase):
             path = self.root / name
             original = path.read_bytes()
             path.write_text(''); self.run_cli(expected=9)
-            path.write_bytes(original); path.chmod(0)
-            self.run_cli(expected=9)
+            path.write_bytes(original)
+            if os.name != 'nt':  # Windows: chmod only sets read-only; a file cannot be made unreadable
+                path.chmod(0)
+                self.run_cli(expected=9)
             path.chmod(0o644); path.unlink(); self.run_cli(expected=9)
             path.symlink_to(self.root / 'absent'); self.run_cli(expected=9)
             path.unlink(); path.write_bytes(original)

@@ -51,7 +51,7 @@ def subject(payload):
 
 def main():
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace") or "{}")  # UTF-8 whatever the code page
         text = subject(payload)
         if payload.get("tool_name") == "Bash" and ENV_CHECK.match(text):
             return

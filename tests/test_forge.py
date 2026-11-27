@@ -42,7 +42,7 @@ sys.exit(int(os.environ.get('FORGE_RC', '0')))
 ''')
         gh.chmod(0o755)
         self.env = {k: v for k, v in os.environ.items() if k not in ('SB_CONFIG', 'GH_REPO', 'SB_REPO_PATH')}
-        self.env.update(PATH=f'{self.root}:{os.environ["PATH"]}', FORGE_LOG=str(self.log),
+        self.env.update(PATH=f'{self.root}{os.pathsep}{os.environ["PATH"]}', FORGE_LOG=str(self.log),
                         SB_GITHUB_HALT_FILE=str(self.halt), SB_GITHUB_RETRY_DELAY='0')
         self.config = self.root / 'cfg.json'
 
@@ -73,6 +73,7 @@ sys.exit(int(os.environ.get('FORGE_RC', '0')))
         r = self.run_forge('provider', env={'SB_CONFIG': self.cfg(provider='azure-devops')})
         self.assertEqual(r.stdout, 'azure-devops\n')
 
+    @unittest.skipUnless(hasattr(os, 'mkfifo'), 'Windows has no FIFOs; <(…) configs reach native tools as temp copies there')
     def test_config_may_be_a_fifo_read_once(self):
         fifo = self.root / 'fifo'
         os.mkfifo(fifo)

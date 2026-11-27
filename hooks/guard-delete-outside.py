@@ -17,10 +17,37 @@ Its own errors never block a tool call: anything unexpected exits 0 with no outp
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 
 RM_CMDS = {"rm", "rmdir", "unlink", "trash"}
 TEMP_ROOTS = ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"]
+
+
+def native(path):
+    """Windows: a command's MSYS path (/c/x, /tmp/x) as the Windows path Git Bash means by it.
+
+    Claude Code runs Bash tool commands in Git Bash there, so a command names paths the
+    MSYS way while this hook is a Windows Python. Elsewhere the path is returned as is.
+    """
+    if os.name != "nt" or not path.startswith("/") or path.startswith("//"):
+        return path
+    m = re.match(r"^/([A-Za-z])(?=/|$)", path)
+    if m:
+        return m.group(1).upper() + ":" + (path[2:] or "/")
+    try:
+        r = subprocess.run(["cygpath", "-w", path], capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return path
+
+
+def same(path):
+    """One spelling for comparisons: C:/x, c:\\x and C:\\x alike on Windows."""
+    return os.path.normcase(os.path.normpath(path))
 
 
 def segments(command):
@@ -90,20 +117,23 @@ def expand(word, env, local):
 
 
 def under(path, root):
+    path, root = same(path), same(root)
     return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
 
 
 def verdict(path, project, env):
     """None when the deletion target is fine, else why it is not."""
-    home = os.path.normpath(env.get("HOME", "")) if env.get("HOME") else None
+    home = same(native(env["HOME"])) if env.get("HOME") else None
     forms = {path, os.path.join(os.path.realpath(os.path.dirname(path)), os.path.basename(path))}
-    if any(p == os.sep for p in forms) or (home and any(p == home for p in forms)):
+    if any(os.path.splitdrive(p)[1] in ("/", "\\") for p in forms) or (home and any(same(p) == home for p in forms)):
         return "is the filesystem root or your home directory"
     roots = {project, os.path.realpath(project)}
     if any(under(p, r) for p in forms for r in roots):
         return None
-    temps = TEMP_ROOTS + ([os.path.normpath(env["TMPDIR"])] if env.get("TMPDIR") else [])
-    if any(under(p, t) and p.rstrip(os.sep) != t.rstrip(os.sep) for p in forms for t in temps):
+    temps = TEMP_ROOTS + ([os.path.normpath(native(env["TMPDIR"]))] if env.get("TMPDIR") else [])
+    if os.name == "nt":  # Git Bash's /tmp is the Windows temp folder
+        temps += [native("/tmp"), tempfile.gettempdir()] + [env[k] for k in ("TEMP", "TMP") if env.get(k)]
+    if any(under(p, t) and same(p).rstrip(os.sep) != same(t).rstrip(os.sep) for p in forms for t in temps):
         return None
     return "is outside the project (%s)" % project
 
@@ -125,14 +155,14 @@ def targets(command, cwd, env):
         cmd, args = os.path.basename(tokens[0]), tokens[1:]
         if cmd == "cd":
             target = expand(args[0], env, local) if args else env.get("HOME")
-            d = os.path.normpath(os.path.join(d, target)) if target else d
+            d = os.path.normpath(os.path.join(d, native(target))) if target else d
             continue
 
         def resolve(word, base=None):
             ex = expand(word, env, local)
             if ex is None or ex == "":
                 return None
-            return os.path.normpath(os.path.join(base or d, ex))
+            return os.path.normpath(os.path.join(base or d, native(ex)))
 
         if cmd in RM_CMDS:
             words, end = [], False
@@ -185,12 +215,12 @@ def check(command, cwd, project, env):
 
 def main():
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace") or "{}")  # UTF-8 whatever the code page
         command = (payload.get("tool_input") or {}).get("command")
         if not isinstance(command, str):
             return
-        cwd = payload.get("cwd") or os.getcwd()
-        project = os.path.normpath(os.environ.get("CLAUDE_PROJECT_DIR") or cwd)
+        cwd = native(payload.get("cwd") or os.getcwd())
+        project = os.path.normpath(native(os.environ.get("CLAUDE_PROJECT_DIR") or cwd))
         reason = check(command, cwd, project, dict(os.environ))
         if reason:
             print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",

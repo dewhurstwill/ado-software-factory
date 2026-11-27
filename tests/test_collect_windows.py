@@ -17,7 +17,7 @@ import test_collect_intake_safety as intake  # noqa: E402
 ROOT = intake.ROOT
 STATE = ROOT/'scripts/super-board-collect-state.py'
 SHIM = r'''#!/usr/bin/env python3
-import fcntl as _real, os, runpy, sys, types
+import fcntl as _real, os, runpy, sys, types  # POSIX host only (skipped on Windows)
 # Python 3.12+ stdlib (subprocess) probes `import msvcrt` to decide it is on Windows; load it
 # before the stand-in exists so only the script under test sees msvcrt.
 import subprocess  # noqa: F401
@@ -44,6 +44,7 @@ def shim_bin(root):
     return bin_dir
 
 
+@unittest.skipIf(os.name == 'nt', 'simulates Windows on a POSIX host; on Windows test_collect_intake_safety.py runs the real msvcrt path')
 class WindowsIntakeTests(intake.IntakeTests):
     """Every intake regression again, through the portable lock path."""
     def setUp(self):
@@ -86,6 +87,7 @@ class ImportTests(unittest.TestCase):
         # import flips it to its Windows branch (_winapi). Holds on every interpreter.
         self.assertLess(SHIM.index('import subprocess'), SHIM.index("sys.modules['msvcrt']"))
 
+    @unittest.skipIf(os.name == 'nt', 'the shim needs a POSIX host; on Windows the real script imports without fcntl in every intake test')
     def test_module_imports_without_fcntl(self):
         with tempfile.TemporaryDirectory() as tmp:
             bin_dir = shim_bin(Path(tmp))

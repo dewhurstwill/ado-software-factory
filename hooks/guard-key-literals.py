@@ -83,7 +83,7 @@ def hit_lines(text):
 
 def main():
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace") or "{}")  # UTF-8 whatever the code page
         hits = hit_lines(visible_text(payload))
         if not hits:
             return

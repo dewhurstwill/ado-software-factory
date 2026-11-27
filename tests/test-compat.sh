@@ -72,7 +72,12 @@ case "$err" in *'no working Python 3'*) ;; *) fail "missing-python message: $err
 # 3 — super-board-compat.py
 PYC="$ROOT/scripts/super-board-compat.py"
 printf '#!/bin/sh\necho hi\n' > "$T/bin/sbfake"; chmod +x "$T/bin/sbfake"
-[ "$(PATH="$T/bin:$PATH" "$REAL_PY" "$PYC" which sbfake)" = "$T/bin/sbfake" ] || fail 'which must find a PATH tool'
+out=$(PATH="$T/bin:$PATH" "$REAL_PY" "$PYC" which sbfake)
+if [ -n "$ON_WINDOWS" ]; then  # Windows: Git Bash runs the #! script: "<bash.exe> C:\…\sbfake"
+  case "$out" in *bash*sbfake) ;; *) fail "which must find a PATH tool: $out" ;; esac
+else
+  [ "$out" = "$T/bin/sbfake" ] || fail "which must find a PATH tool: $out"
+fi
 rc=0; python3 "$PYC" which sb-no-such-tool 2>/dev/null || rc=$?
 [ "$rc" -eq 1 ] || fail 'which must fail for a missing tool'
 python3 - "$PYC" "$T" <<'PY' || fail 'compat.py Windows rules'

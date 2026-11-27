@@ -192,7 +192,7 @@ printf -- '- 413 shows the size message\nCloses #1\n' > "$TMP/msg.md"
 RC=0; STUB_OID="$SHA" gate --expect-head "$SHA" --subject "🐛 [fix] receipts: show a size error" --body-file "$TMP/msg.md" >/dev/null 2>&1 || RC=$?
 [ "$RC" -eq 0 ] || fail "a merge with a subject should exit 0, got $RC"
 grep -q -- "--subject 🐛 \[fix\] receipts: show a size error" "$GH_LOG" || fail "merge must pass --subject, got: $(cat "$GH_LOG")"
-grep -q -- "--body-file $TMP/msg.md" "$GH_LOG" || fail "merge must pass --body-file, got: $(cat "$GH_LOG")"
+grep -qF -e "--body-file $TMP/msg.md" -e "--body-file $(sb_native "$TMP")/msg.md" "$GH_LOG" || fail "merge must pass --body-file, got: $(cat "$GH_LOG")"
 RC=0; STUB_OID="$SHA" gate --expect-head "$SHA" --body-file /nope.md >/dev/null 2>&1 || RC=$?
 [ "$RC" -eq 66 ] || fail "an unreadable --body-file should exit 66, got $RC"
 teardown

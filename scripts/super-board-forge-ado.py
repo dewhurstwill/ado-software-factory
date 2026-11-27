@@ -397,10 +397,10 @@ class AdoVerbs:
     def az_token():
         try:
             # On Windows the Azure CLI is az.cmd, which only resolves through PATHEXT.
-            az = shutil.which('az')
+            az = forge.github_read.compat.resolve('az')  # az.cmd, or a #! script via Git Bash
             if not az:
                 return ''
-            r = subprocess.run([az, 'account', 'get-access-token', '--resource', ARM_RESOURCE,
+            r = subprocess.run([*az, 'account', 'get-access-token', '--resource', ARM_RESOURCE,
                                 '--query', 'accessToken', '-o', 'tsv'], capture_output=True, text=True, timeout=30)
         except (OSError, subprocess.SubprocessError):
             return ''

@@ -57,7 +57,7 @@ class VerificationReadiness(unittest.TestCase):
                     args = ["--backend", "codex"] + args
                 result = subprocess.run([sbtest.BASH, str(ROOT / "scripts" / launcher),
                                          "--config", str(config), "--codex"] + args,
-                                        cwd=root, env=dict(os.environ, PATH=str(binary.parent) + ":" + os.environ["PATH"]),
+                                        cwd=root, env=dict(os.environ, PATH=str(binary.parent) + os.pathsep + os.environ["PATH"]),
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 9, result.stderr)
                 self.assertTrue(json.loads(result.stdout)["status"] == "halted" if "lane" in launcher

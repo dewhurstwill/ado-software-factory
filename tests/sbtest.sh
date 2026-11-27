@@ -28,6 +28,15 @@ sbtest_git_env() {
   export GIT_CONFIG_COUNT="$n"
 }
 [ -n "${SBTEST_GIT_ENV:-}" ] || { sbtest_git_env; export SBTEST_GIT_ENV=1; }
+# Windows: Python fakes write LF like the tools they stand in for (tests/pysite).
+sbtest_pysite() {
+  [ -n "${SB_WINDOWS:-}" ] || return 0
+  local site="$SBTEST_ROOT/tests/pysite"
+  command -v cygpath >/dev/null 2>&1 && site=$(cygpath -w "$site")
+  case ";${PYTHONPATH:-};" in *";$site;"*) return 0 ;; esac
+  export PYTHONPATH="$site${PYTHONPATH:+;$PYTHONPATH}"
+}
+sbtest_pysite
 
 fake_tool() {
   local dir="$1" name="$2" body first
@@ -47,6 +56,12 @@ fake_tool() {
   esac
   printf '%s' "$body" > "$dir/$name"
   chmod +x "$dir/$name"
+}
+
+# sb_native <path>: the form a native Windows program receives for an MSYS path
+# (C:/x/y, as MSYS converts arguments); the path itself elsewhere.
+sb_native() {
+  if [ -n "${SB_WINDOWS:-}" ] && command -v cygpath >/dev/null 2>&1; then cygpath -m "$1"; else printf '%s' "$1"; fi
 }
 
 sb_path() {

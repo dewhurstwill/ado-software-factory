@@ -336,7 +336,7 @@ def link_sources(data: dict, repo: Path, src_root: Path, base: str) -> int:
         path, a, b = m[1], m[2], m[3]
         full = (repo / prefix / path).resolve()
         try:
-            rel = full.relative_to(src_root).as_posix()
+            rel = full.relative_to(src_root.resolve()).as_posix()  # both resolved: Windows adds a drive
         except ValueError:
             return s, 0
         anchor = f"#L{a}" + (f"-L{b}" if b else "") if a else ""

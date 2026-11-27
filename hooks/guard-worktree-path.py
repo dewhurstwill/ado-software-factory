@@ -23,6 +23,31 @@ ADD_VALUE_OPTS = {"-b", "-B", "--reason"}
 GIT_VALUE_OPTS = {"-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
 
 
+def native(path):
+    """Windows: a command's MSYS path (/c/x, /tmp/x) as the Windows path Git Bash means by it.
+
+    Claude Code runs Bash tool commands in Git Bash there, so a command names paths the
+    MSYS way while this hook is a Windows Python. Elsewhere the path is returned as is.
+    """
+    if os.name != "nt" or not path.startswith("/") or path.startswith("//"):
+        return path
+    m = re.match(r"^/([A-Za-z])(?=/|$)", path)
+    if m:
+        return m.group(1).upper() + ":" + (path[2:] or "/")
+    try:
+        r = subprocess.run(["cygpath", "-w", path], capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return path
+
+
+def same(path):
+    """One spelling for comparisons: C:/x, c:\\x and C:\\x alike on Windows."""
+    return os.path.normcase(os.path.normpath(path))
+
+
 def segments(command):
     """Split a shell command into simple-command token lists. Quotes are honoured; nothing runs."""
     out, tokens, cur, has, quote = [], [], "", False, None
@@ -96,7 +121,7 @@ def worktree_targets(command, cwd, env):
         if cmd == "cd":
             target = expand(args[0], env) if args else env.get("HOME")
             if target:
-                d = os.path.normpath(os.path.join(d, target))
+                d = os.path.normpath(os.path.join(d, native(target)))
             continue
         if os.path.basename(cmd) != "git":
             continue
@@ -105,7 +130,7 @@ def worktree_targets(command, cwd, env):
             if args[i] == "-C":
                 target = expand(args[i + 1] if i + 1 < len(args) else "", env)
                 if target:
-                    git_dir = os.path.normpath(os.path.join(git_dir, target))
+                    git_dir = os.path.normpath(os.path.join(git_dir, native(target)))
                 i += 2
             elif args[i] in GIT_VALUE_OPTS:
                 i += 2
@@ -132,14 +157,15 @@ def worktree_targets(command, cwd, env):
             continue
         raw = positional[idx]
         ex = expand(raw, env)
-        found.append((raw, git_dir, None if ex is None else os.path.normpath(os.path.join(git_dir, ex))))
+        found.append((raw, git_dir, None if ex is None else os.path.normpath(os.path.join(git_dir, native(ex)))))
     return found
 
 
 def repo_root(toplevel):
     """The main checkout's root, from it or any worktree under .claude/worktrees/."""
+    toplevel = os.path.normpath(toplevel)  # git prints C:/x on Windows
     marker = os.sep + ALLOWED_DIR + os.sep
-    at = toplevel.find(marker)
+    at = same(toplevel).find(same(marker))
     return toplevel if at == -1 else toplevel[:at]
 
 
@@ -152,7 +178,7 @@ def check(command, cwd, root_of, env):
         if not repo:
             continue  # not a repository: git itself will refuse
         allowed = os.path.join(repo, ALLOWED_DIR)
-        if resolved and resolved.startswith(allowed + os.sep):
+        if resolved and same(resolved).startswith(same(allowed) + os.sep):
             continue
         where = ("resolves to " + resolved) if resolved else "cannot be resolved before it runs"
         return (
@@ -177,11 +203,11 @@ def toplevel_of(d):
 
 def main():
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace") or "{}")  # UTF-8 whatever the code page
         command = (payload.get("tool_input") or {}).get("command")
         if not isinstance(command, str):
             return
-        cwd = payload.get("cwd") or os.getcwd()
+        cwd = native(payload.get("cwd") or os.getcwd())
 
         def root_of(d):
             top = toplevel_of(d) or (os.environ.get("CLAUDE_PROJECT_DIR") if d == cwd else None)

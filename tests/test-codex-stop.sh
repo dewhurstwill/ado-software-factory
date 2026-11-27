@@ -54,10 +54,10 @@ for attempt in {1..100}; do
   sleep .02
 done
 [ -z "${SB_WINDOWS:-}" ] || export STOP_WAVE_WINPID="$(cat "$TMP/.claude/super-board/codex-wave.pid")"
-(cd "$TMP" && PATH="$TMP/bin:$PATH" bash "$ROOT/scripts/super-board-stop.sh" test > stop.log)
-wait "$wave_pid"
+(cd "$TMP" && PATH="$TMP/bin:$PATH" bash "$ROOT/scripts/super-board-stop.sh" test > stop.log 2>&1) || { echo "FAIL: stop exited non-zero"; cat "$TMP/stop.log"; exit 1; }
+wait "$wave_pid" || [ -n "${SB_WINDOWS:-}" ]  # Windows: taskkill /F ends it with status 1
 wave_pid=""
-[ "$(head -1 "$STOP_TRACE")" = wave-stopped ] || { echo 'FAIL: claims released before wave stopped'; exit 1; }
+[ "$(head -1 "$STOP_TRACE")" = wave-stopped ] || { echo "FAIL: claims released before wave stopped"; cat "$STOP_TRACE" "$TMP/stop.log"; exit 1; }
 grep -q '^gh issue comment 12 ' "$STOP_TRACE" || { echo 'FAIL: numeric issue not wrapped up'; exit 1; }
 if grep -q 'workflow-wave.lock\|merge.lock' "$STOP_TRACE"; then
   echo 'FAIL: control marker treated as an issue'; exit 1

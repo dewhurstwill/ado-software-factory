@@ -5,9 +5,12 @@
 # killed with its child processes and counted as failed (exit 124), and the run goes on.
 set -uo pipefail
 cd "$(dirname "$0")/.."
-# Windows (Git Bash): jq without CRLF and a working python3, exported to every suite.
-# shellcheck source=../scripts/super-board-compat.sh
-[ ! -f scripts/super-board-compat.sh ] || . scripts/super-board-compat.sh
+# Windows (Git Bash): jq without CRLF and a working python3, exported to every suite,
+# plus the pinned test git settings and LF-writing Python fakes (tests/sbtest.sh).
+# shellcheck source=sbtest.sh
+if [ -f tests/sbtest.sh ]; then . tests/sbtest.sh
+elif [ -f scripts/super-board-compat.sh ]; then . scripts/super-board-compat.sh
+fi
 
 for tool in bash python3 git jq node curl tar; do
   command -v "$tool" >/dev/null || { echo "Missing test dependency: $tool" >&2; exit 1; }
@@ -20,10 +23,23 @@ case "$SUITE_LIMIT" in ''|*[!0-9]*) echo "SB_SUITE_TIMEOUT must be whole seconds
 # (set -m below); Windows-native children (python.exe, node.exe) are outside MSYS
 # process groups, so on Windows the process tree is ended with taskkill as well.
 kill_tree() {
-  local pid="$1" winpid=""
-  if [ -n "${SB_WINDOWS:-}" ] && [ -r "/proc/$pid/winpid" ]; then
-    winpid=$(cat "/proc/$pid/winpid" 2>/dev/null || true)
-    [ -z "$winpid" ] || taskkill //F //T //PID "$winpid" >/dev/null 2>&1 || true
+  local pid="$1" tree p w
+  if [ -n "${SB_WINDOWS:-}" ]; then
+    # MSYS ps: PID PPID PGID WINPID … (a status letter may lead). Walk PPID links from
+    # the suite down, then end each process by MSYS PID and by Windows PID.
+    tree=$(ps 2>/dev/null | awk -v root="$pid" '
+      NR > 1 { if ($1 !~ /^[0-9]+$/) { $1 = ""; $0 = $0 } ; pp[$1] = $2; wp[$1] = $4 }
+      END { keep[root] = 1; changed = 1
+            while (changed) { changed = 0
+              for (p in pp) if (!(p in keep) && (pp[p] in keep)) { keep[p] = 1; changed = 1 } }
+            for (p in keep) print p, wp[p] }')
+    while read -r p w; do
+      [ -n "$p" ] || continue
+      kill -KILL "$p" 2>/dev/null || true
+      [ -z "$w" ] || taskkill //F //T //PID "$w" >/dev/null 2>&1 || true
+    done <<EOF
+$tree
+EOF
   fi
   kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
   sleep 2

@@ -184,7 +184,7 @@ def main():
     try:
         if os.environ.get("SB_ALLOW_PROTECTED_PUSH") == "1":
             return
-        payload = json.loads(sys.stdin.read() or "{}")
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace") or "{}")  # UTF-8 whatever the code page
         command = (payload.get("tool_input") or {}).get("command")
         if not isinstance(command, str):
             return
