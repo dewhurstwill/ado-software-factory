@@ -51,6 +51,66 @@ Or as a Claude Code plugin:
 > [!NOTE]
 > The plugin ships the skills only. Run `/super-board:super-board onboard` and its 🔍 Checks step adds the guard hooks, scripts and workflows. Needs Claude Code, `gh`, `jq`, bash 3.2+ and Python 3.9+; the installer checks.
 
+### Providers: GitHub or Azure DevOps
+
+The board, tickets and pull requests live on one provider per project, set by `provider` in the
+project config. Absent means `github`, so existing installs do not change.
+
+| | GitHub (default) | Azure DevOps |
+|---|---|---|
+| Tickets | Issues | Azure Boards work items (User Story, Bug) |
+| Board | Projects v2, Status field | One team's Kanban board, seven columns |
+| Labels | Labels | Tags |
+| Claim | Assignee | Tag `sb:claimed-<holder>` |
+| Pull requests | GitHub PRs | Azure Repos PRs |
+| Sign-in | `gh auth login` | A PAT (`AZURE_DEVOPS_EXT_PAT`, in the environment or the project's `.env`) or `az login` |
+
+Azure DevOps support is being added in this fork and is not complete:
+
+| Part | Azure DevOps status |
+|---|---|
+| Board and tickets: read, move, create, label, comment, claim, wave planning | Works, checked against a live organisation |
+| Board setup (`board ensure`: seven columns, bugs on the board) | Works, checked live |
+| Pull requests, merge gate, PR body | In progress |
+| Human approval of gated merges | Not yet |
+| Onboarding questions, status view, ticket filers, collectors, skill instructions | Still GitHub-only |
+
+To try it, install from this fork and add the block below to
+`.claude/super-board/configs/<slug>.json`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dewhurstwill/ado-software-factory/main/get.sh | SUPER_BOARD_REPO=dewhurstwill/ado-software-factory bash
+```
+
+```json
+{
+  "provider": "azure-devops",
+  "ado": {
+    "organization": "https://dev.azure.com/<org>",
+    "project": "<project>",
+    "team": "<project> Team",
+    "board": "Stories",
+    "repository": "<repo>"
+  }
+}
+```
+
+The PAT needs **Work Items: Read & write** and **Code: Read & write**, and its owner must be a
+team administrator to set up the board columns. The Agile, Scrum and Basic processes are
+supported through the board's own column-to-state mapping; only Agile has been run live.
+Verb contract, mapping and the service behaviour this relies on:
+[providers.md](skills/super-board/references/providers.md).
+
+### Platforms: macOS, Linux, Windows
+
+| Platform | Shell | Status |
+|---|---|---|
+| macOS | bash 3.2+ | Every offline suite runs in CI |
+| Linux | bash | Every offline suite runs in CI |
+| Windows | Git Bash (the shell Claude Code uses on Windows) | CI job added and advisory; not yet green |
+
+Windows needs Git for Windows, Python 3.9+, `jq` and Node.js on `PATH`. WSL counts as Linux.
+
 ### Security
 
 Two security skills come with every install, and they stay separate:
