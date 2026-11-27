@@ -82,17 +82,13 @@ sys.exit(int(os.environ.get('FORGE_RC', '0')))
         writer.join()
         self.assertEqual(r.stdout, 'azure-devops\n')
 
-    def test_github_leaves_the_azure_devops_only_pr_verbs_unimplemented(self):
-        # The Azure DevOps pr verbs are tested in test_forge_ado_pr.py. Verbs only that provider has
-        # stay "not implemented" on GitHub and never reach `gh`.
-        for verb in (['pr', 'create', '--base', 'main', '--head', 'f', '--title', 't', '--body-file', 'x'],
-                     ['pr', 'ready', '1'], ['pr', 'comment', '1', '--body-file', 'x'], ['pr', 'comments', '1'],
-                     ['pr', 'comment-edit', '1', '1.1', '--body-file', 'x'], ['pr', 'links', '1']):
-            r = self.run_forge(*verb, cfg=self.cfg(provider='github'))
-            self.assertEqual(r.returncode, 69, (verb, r.stderr))
-            self.assertIn('github provider: ', r.stderr)
-            self.assertIn('is not implemented yet', r.stderr)
-        self.assertEqual(self.calls(), [], 'no gh call for an unimplemented verb')
+    def test_github_board_ensure_is_setup_not_a_forge_verb(self):
+        # Every other verb is implemented on both providers (tests/test_forge_contract.py runs one scenario
+        # list against both). The one that stays provider-specific points at the setup script and never runs gh.
+        r = self.run_forge('board', 'ensure', cfg=self.cfg(provider='github'))
+        self.assertEqual(r.returncode, 69, r.stderr)
+        self.assertIn('super-board-setup.py', r.stderr)
+        self.assertEqual(self.calls(), [], 'no gh call for board ensure')
 
     def test_unknown_provider_exits_66(self):
         r = self.run_forge('provider', cfg=self.cfg(provider='gitlab'))
@@ -169,9 +165,9 @@ sys.exit(int(os.environ.get('FORGE_RC', '0')))
             ['pr', 'list', '--repo', 'o/n', '--state', 'open', '--limit', '100', '--json',
              'number,title,body,url,headRefName,files'],
             ['pr', 'list', '--repo', 'o/n', '--state', 'merged', '--limit', '100', '--json', 'number,title,body,url'],
-            ['issue', 'view', '3', '--repo', 'o/n', '--json', 'number,title,body'],
+            ['issue', 'view', '3', '--repo', 'o/n', '--json', 'number,title,body,state,stateReason,labels,assignees,url'],
             ['issue', 'list', '--repo', 'o/n', '--state', 'closed', '--limit', '100', '--json',
-             'number,title,body,stateReason']])
+             'number,title,body,state,stateReason,labels,assignees,url']])
 
     def test_ticket_graph_flattens_pages(self):
         r = self.run_forge('--repo', 'o/n', 'ticket', 'graph', out=PAGES)

@@ -67,14 +67,6 @@ class VerbTests(CollectCase):
         self.assertEqual(out[1]['comments'][1]['author'], {'login': 'svc.build@example.com', 'type': 'Bot'})
         self.assertEqual(out[1]['comments'][0]['author'], {'login': 'user@example.com', 'type': 'User'})
 
-    def test_github_backend_leaves_them_unimplemented(self):
-        cfg = self.root / 'gh.json'
-        cfg.write_text('{"provider":"github"}')
-        for args in (['pr', 'merged', '--since', '2026-01-01T00:00:00Z', '--limit', '1'], ['pr', 'threads', '1']):
-            r = subprocess.run([sys.executable, str(ROOT / 'scripts/super-board-forge.py'), '--config', str(cfg), *args],
-                               capture_output=True, text=True)
-            self.assertEqual(r.returncode, 69, args)
-
 
 class CollectorTests(CollectCase):
     def test_lists_merged_prs_with_comments_threads_and_super_review_reports(self):

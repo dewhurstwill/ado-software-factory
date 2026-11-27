@@ -127,6 +127,24 @@ class GateTests(ScriptCase):
         self.assertIn('human-gate: money', r.stdout)
         self.assertEqual(self.requests('PATCH', r'.'), [])
 
+    def test_a_pr_touching_the_board_config_folder_always_waits_for_a_human(self):
+        # board-config is on by default and survives a custom always_human: that file holds the merge
+        # policy and the approver list, so an agent's PR must not be able to change either.
+        self.git('checkout', '-q', '-b', 'cfg', 'main')
+        put_file(self.work / '.claude/super-board/configs/app.json', '{"merge_policy":{"default":"auto"}}\n')
+        head = self.commit('cfg')
+        self.git('push', '-q', 'origin', 'cfg')
+        self.git('checkout', '-q', 'main')
+        n = self.pulls.add('cfg', 'main', title='config', head=head)
+        for policy in (None, {'always_human': {}}):
+            if policy is not None:
+                self.config_value['merge_policy'] = policy
+            r = self.run_script(GATE, '--config', self.cfg(), '--pr', str(n), '--lock-timeout', '6', '--expect-head', head)
+            self.assertEqual(r.returncode, 7, (policy, r.stderr))
+            self.assertIn('human-gate: board-config — path .claude/super-board/configs/app.json', r.stdout)
+            self.assertEqual(self.pulls.prs[n]['status'], 'active')
+        self.no_gh_calls()
+
     def test_branch_policy_refusal_exits_7_without_a_halt(self):
         self.pulls.merge_outcome = 'rejectedByPolicy'
         r = self.gate('--expect-head', self.head)

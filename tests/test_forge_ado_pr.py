@@ -332,11 +332,116 @@ class CreateTests(PrCase):
                        '--closes', 'abc')
         self.assertEqual(r.returncode, 64)
 
-    def test_github_backend_leaves_the_new_verbs_unimplemented(self):
-        for verb in (['pr', 'ready', '1'], ['pr', 'comments', '1'], ['pr', 'links', '1']):
-            r = self.forge(*verb, cfg=False, env={'SB_CONFIG': None})
-            self.assertEqual(r.returncode, 69, verb)
-            self.assertIn('github provider: ', r.stderr)
+
+class LaneVerbTests(PrCase):
+    """The verbs a lane agent shares with GitHub: pr view, checks, inline notes, thread resolve, threads."""
+    HEAD = 'd' * 40
+
+    def pr(self, **kw):
+        return self.pulls.add('feat', 'main', title='the title', head=self.HEAD, **kw)
+
+    def test_pr_view_is_one_neutral_object(self):
+        n = self.pr(labels=['bug'])
+        view = self.js('pr', 'view', str(n))
+        self.assertEqual(view, {'number': n, 'title': 'the title', 'url': f'https://dev.azure.com/example/Factory/_git/Factory/pullrequest/{n}',
+                                'state': 'OPEN', 'isDraft': False, 'headRefName': 'feat', 'headRefOid': self.HEAD,
+                                'baseRefName': 'main', 'mergeCommit': None, 'labels': [{'name': 'bug'}]})
+        self.pulls.prs[n].update(status='completed', lastMergeCommit={'commitId': 'e' * 40})
+        done = self.js('pr', 'view', str(n))
+        self.assertEqual((done['state'], done['mergeCommit']), ('MERGED', {'oid': 'e' * 40}))
+        self.assertEqual(self.forge('pr', 'view', '99').returncode, 3)
+
+    def test_checks_map_policy_evaluations(self):
+        n = self.pr()
+        self.assertEqual(self.js('pr', 'checks', str(n)), [], 'no policies: an empty list, not an error')
+        self.pulls.policies = [{'status': 'approved', 'type': 'Minimum number of reviewers', 'blocking': True},
+                               {'status': 'running', 'type': 'Build', 'name': 'ci', 'blocking': True},
+                               {'status': 'rejected', 'type': 'Comment requirements', 'blocking': False},
+                               {'status': 'queued', 'type': 'Build', 'name': 'lint', 'blocking': False},
+                               {'status': 'notApplicable', 'type': 'Work item linking', 'blocking': True}]
+        self.assertEqual(self.js('pr', 'checks', str(n)), [
+            {'name': 'Minimum number of reviewers', 'status': 'pass', 'required': True},
+            {'name': 'Build: ci', 'status': 'pending', 'required': True},
+            {'name': 'Comment requirements', 'status': 'fail', 'required': False},
+            {'name': 'Build: lint', 'status': 'pending', 'required': False},
+            {'name': 'Work item linking', 'status': 'skipped', 'required': True}])
+        req = self.requests('GET', r'/policy/evaluations')[0]
+        self.assertEqual(req['query']['artifactId'], [f'vstfs:///CodeReview/CodeReviewId/proj-0001/{n}'])
+        self.assertEqual(req['query']['api-version'], ['7.1-preview.1'])
+
+    def test_checks_find_the_project_id_when_the_pull_request_has_none(self):
+        n = self.pr()
+        self.pulls.project_id = None
+        self.assertEqual(self.js('pr', 'checks', str(n)), [])
+        self.assertEqual(len(self.requests('GET', r'/_apis/projects/Factory$')), 1)
+
+    def note(self, n, *args, body='**Purpose** the note'):
+        return self.forge('pr', 'note', str(n), *args, '--body-file', self.put(body))
+
+    def test_a_line_note_is_a_file_anchored_thread(self):
+        n = self.pr()
+        r = self.note(n, '--file', 'src/a.ts', '--line', '7')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, '1.1\n')
+        sent = self.requests('POST', r'/threads$')[0]['body']
+        self.assertEqual(sent['threadContext'], {'filePath': '/src/a.ts', 'rightFileStart': {'line': 7, 'offset': 1},
+                                                 'rightFileEnd': {'line': 7, 'offset': 1}})
+        self.assertEqual(sent['comments'][0]['content'], '**Purpose** the note')
+
+    def test_range_left_side_and_whole_file_notes(self):
+        n = self.pr()
+        self.note(n, '--file', '/a.ts', '--line', '3', '--end-line', '9', '--side', 'left')
+        self.note(n, '--file', 'b.ts')
+        first, second = [r['body']['threadContext'] for r in self.requests('POST', r'/threads$')]
+        self.assertEqual(first, {'filePath': '/a.ts', 'leftFileStart': {'line': 3, 'offset': 1}, 'leftFileEnd': {'line': 9, 'offset': 1}})
+        self.assertEqual(second, {'filePath': '/b.ts'}, 'a whole-file note has the path only')
+
+    def test_note_refuses_a_moved_head_and_bad_input(self):
+        n = self.pr()
+        r = self.note(n, '--file', 'a.ts', '--line', '1', '--head', 'f' * 40)
+        self.assertEqual(r.returncode, 6, r.stderr)
+        self.assertEqual(self.requests('POST', r'/threads$'), [])
+        self.assertEqual(self.note(n, '--file', 'a.ts', '--line', '1', '--head', self.HEAD).returncode, 0)
+        self.assertEqual(self.note(n, '--file', 'a.ts', '--end-line', '4').returncode, 64)
+        self.assertEqual(self.note(n, '--file', 'a.ts', '--line', '5', '--end-line', '2').returncode, 64)
+        self.assertEqual(self.note(n, '--file', 'a.ts', '--line', '1', '--side', 'up').returncode, 64)
+        self.assertEqual(self.note(n, '--file', 'a.ts', '--line', '1', body='  ').returncode, 64)
+
+    def test_notes_batch_posts_one_thread_each_in_order(self):
+        n = self.pr()
+        notes = [{'file': 'a.ts', 'line': 2, 'body': 'one'}, {'file': 'b.ts', 'body': 'two'},
+                 {'file': 'c.ts', 'line': 1, 'end_line': 3, 'side': 'right', 'body': 'three'}]
+        path = self.root / 'notes.json'
+        path.write_text(json.dumps(notes))
+        out = self.js('pr', 'notes', str(n), '--notes-file', str(path), '--head', self.HEAD)
+        self.assertEqual(out, [{'index': 0, 'id': '1.1'}, {'index': 1, 'id': '2.1'}, {'index': 2, 'id': '3.1'}])
+        self.assertEqual([t['comments'][0]['content'] for t in self.threads_of(n)], ['one', 'two', 'three'])
+        path.write_text('[]')
+        self.assertEqual(self.forge('pr', 'notes', str(n), '--notes-file', str(path)).returncode, 64)
+
+    def test_threads_carry_ids_and_the_anchor_and_note_edit_changes_one(self):
+        n = self.pr()
+        self.note(n, '--file', 'src/a.ts', '--line', '4', '--end-line', '6')
+        self.pulls.add_thread(n, [{'content': 'general'}])
+        threads = self.js('pr', 'threads', str(n))
+        self.assertEqual((threads[0]['path'], threads[0]['line'], threads[0]['startLine'], threads[0]['side'], threads[0]['outdated']),
+                         ('src/a.ts', 6, 4, 'right', False))
+        self.assertEqual((threads[1]['path'], threads[1]['line'], threads[1]['side']), (None, None, None))
+        self.assertEqual(threads[0]['comments'][0]['id'], '1.1')
+        r = self.forge('pr', 'note-edit', str(n), '1.1', '--body-file', self.put('edited'))
+        self.assertEqual((r.returncode, r.stdout), (0, '1.1\n'))
+        self.assertEqual(self.js('pr', 'threads', str(n))[0]['comments'][0]['body'], 'edited')
+
+    def test_thread_resolve_patches_the_thread_status(self):
+        n = self.pr()
+        self.note(n, '--file', 'a.ts', '--line', '1')
+        r = self.forge('pr', 'thread-resolve', str(n), '1')
+        self.assertEqual((r.returncode, r.stdout), (0, 'resolved 1\n'))
+        patch = self.requests('PATCH', r'/threads/1$')[0]
+        self.assertEqual(patch['body'], {'status': 'fixed'})
+        self.assertTrue(self.js('pr', 'threads', str(n))[0]['resolved'])
+        self.assertEqual(self.forge('pr', 'thread-resolve', str(n), '99').returncode, 69)
+        self.assertEqual(self.forge('pr', 'thread-resolve', str(n), 'abc').returncode, 64)
 
 
 class MergeTests(PrCase):

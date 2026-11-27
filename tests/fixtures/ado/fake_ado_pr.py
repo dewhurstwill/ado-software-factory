@@ -38,6 +38,8 @@ class PrStore:
         self.never_complete = False
         self.merge_outcome = None      # 'conflicts' | 'rejectedByPolicy' | 'failure' after the PATCH
         self.before_complete = None    # fn(store, pr), once: e.g. a push landing just before the completion
+        self.project_id = 'proj-0001'  # the real PR payload carries repository.project.id; None = it does not
+        self.policies = []             # policy evaluations of every PR: [{'status', 'type', 'name', 'blocking'}]
         self.unmet_policy = None       # message: the completion PATCH itself is refused with HTTP 403, as the
                                        # live service does for required reviewers (mergeStatus stays succeeded)
 
@@ -98,7 +100,10 @@ class PrStore:
     def render(self, pr, labels=False):
         """The single-PR GET (and the list) carry NO `labels` key on the real service; only the create
         response may, and `/labels` is the source of truth."""
-        return {k: copy.deepcopy(v) for k, v in pr.items() if not k.startswith('_') and (labels or k != 'labels')}
+        out = {k: copy.deepcopy(v) for k, v in pr.items() if not k.startswith('_') and (labels or k != 'labels')}
+        if self.project_id:
+            out['repository'] = {'id': 'repo-id', 'name': 'Factory', 'project': {'id': self.project_id}}
+        return out
 
     def settle(self, pr):
         """What a GET sees: the trial merge appears, and a requested completion lands later."""
@@ -157,8 +162,16 @@ class PrStore:
                 comment = (req['body'].get('comments') or [{}])[0]
                 if not comment.get('content'):
                     return 400, {}, {'message': 'comment content is required'}
-                t = self.add_thread(n, [{'content': comment['content']}], 'active')
+                t = self.add_thread(n, [{'content': comment['content']}], 'active', req['body'].get('threadContext'))
                 return 200, {}, copy.deepcopy(t)
+        mt = re.fullmatch(r'/threads/(\d+)', tail)
+        if mt and m == 'PATCH':
+            thread = next((t for t in self.threads[n] if t['id'] == int(mt.group(1))), None)
+            if thread is None:
+                return 404, {}, {'message': 'thread not found'}
+            if 'status' in req['body']:
+                thread['status'] = req['body']['status']  # observed: a string such as "fixed" is accepted
+            return 200, {}, copy.deepcopy(thread)
         mt = re.fullmatch(r'/threads/(\d+)/comments/(\d+)', tail)
         if mt and m == 'PATCH':
             thread = next((t for t in self.threads[n] if t['id'] == int(mt.group(1))), None)

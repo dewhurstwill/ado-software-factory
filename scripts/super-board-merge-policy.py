@@ -35,7 +35,12 @@ Rules, from references/config-schema.json → merge_policy / migrations:
   deletions`; without them the PR totals are used.
 - merge_policy.always_human.<category>: any label, path glob or added-line
   keyword match → human. Categories ship as money, auth, schema; setting
-  always_human replaces them all (`{}` turns category gating off).
+  always_human replaces them all (`{}` turns category gating off). EXCEPT
+  `board-config`: a PR that touches the board's own config folder
+  (.claude/super-board/configs/, or the .agents/ mirror) ALWAYS waits for a human,
+  whatever always_human says, because that file holds this very policy and, on
+  Azure DevOps, the approver list: an agent's PR must not be able to loosen it or
+  change who approves. Only a `board-config` key in always_human replaces its rule.
 - migrations: a changed path matching migrations.globs makes this a migration
   PR. Every env in allowed_envs with a command runs (a command of "-" means the
   deploy pipeline applies it: nothing to run). target_env not in allowed_envs, or
@@ -67,6 +72,13 @@ DEFAULT_ALWAYS_HUMAN = {
         "paths": [],
         "keywords": ["drop table", "drop column", "truncate table", "rename column", "drop schema"],
     },
+}
+# Not part of DEFAULT_ALWAYS_HUMAN: it survives a custom (or empty) always_human, so a PR cannot
+# switch the guard off by editing the very file it guards. `**/` also covers a monorepo sub-folder.
+BOARD_CONFIG_RULE = {
+    "labels": [],
+    "paths": ["**/.claude/super-board/configs/**", "**/.agents/super-board/configs/**"],
+    "keywords": [],
 }
 DEFAULT_MIGRATION_GLOBS = [
     "supabase/migrations/**", "prisma/migrations/**", "drizzle/**",
@@ -165,6 +177,8 @@ def main() -> int:
         human.append({"category": "size",
                       "why": f"big PR — please review: {size} changed lines > auto_max_lines {cap}{extra}"})
     always = policy["always_human"] if isinstance(policy.get("always_human"), dict) else DEFAULT_ALWAYS_HUMAN
+    if "board-config" not in always:
+        always = dict(always, **{"board-config": BOARD_CONFIG_RULE})
     for cat, rule in always.items():
         rule = rule or {}
         hit = next((f"label {l}" for l in rule.get("labels") or [] if l.lower() in labels), None)

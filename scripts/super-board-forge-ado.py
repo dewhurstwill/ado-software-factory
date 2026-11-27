@@ -891,15 +891,19 @@ class AdoVerbs:
         print(json.dumps(self.ticket(self.get_item(n, self.ticket_fields()))))
 
     def ticket_list(self, argv):
-        p = forge.parser('ticket list --state open|closed|all --limit N')
+        p = forge.parser('ticket list [--state open|closed|all] [--label L]... [--limit N]')
         p.add_argument('--state', default='open', choices=['open', 'closed', 'all'])
+        p.add_argument('--label', action='append', default=[])
         p.add_argument('--limit', default='30', type=forge.positive)
         a = p.parse_args(argv)
         ids = sorted(self.wiql(self.board_types()), reverse=True)
+        wanted = {l.lower() for l in a.label}
         out = []
         for i in range(0, len(ids), 200):
             for wi in sorted(self.fetch(ids[i:i + 200], self.ticket_fields()), key=lambda w: -w['id']):
                 t = self.ticket(wi)
+                if wanted and not wanted <= {l['name'].lower() for l in t['labels']}:
+                    continue  # every --label must be there, as `gh issue list --label` does
                 if a.state == 'all' or t['state'].lower() == a.state:
                     out.append(t)
             if len(out) >= int(a.limit):

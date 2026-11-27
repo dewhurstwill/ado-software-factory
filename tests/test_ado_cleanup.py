@@ -91,13 +91,6 @@ class PrRefsVerbTests(CleanupCase):
                          [{'number': b, 'headRefName': 'feat-done', 'baseRefName': 'main', 'headRefOid': 'b' * 40}])
         self.assertEqual(len(self.fake.reqs('GET', r'/pullrequests$')), 2, 'one list call per state, no per-PR reads')
 
-    def test_github_backend_leaves_it_unimplemented(self):
-        cfg = self.root / 'gh.json'
-        cfg.write_text('{"provider":"github"}')
-        r = subprocess.run([sys.executable, str(FORGE), '--config', str(cfg), 'pr', 'refs', '--state', 'open',
-                            '--limit', '5'], capture_output=True, text=True)
-        self.assertEqual(r.returncode, 69)
-
 
 class HookTests(CleanupCase):
     def test_removes_only_what_the_service_confirms_merged_at_this_exact_tip(self):

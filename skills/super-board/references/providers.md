@@ -1,86 +1,180 @@
-# Providers: the forge verb contract
+# Providers: one forge, one set of lane commands
 
-Scripts never call `gh` for tickets, PRs or merges. They call
-`.claude/bin/super-board-forge.py`, which picks a backend from the project config and
-answers every verb in one set of shapes. Callers (merge policy, the jq in
-`super-board-wave-plan.sh` and `super-board-deps.sh`, validators) read those shapes and
-do not know which provider answered.
+Lane agents and scripts never call `gh` (or an Azure DevOps API) for tickets, boards, PRs or merges. They run
+one command, `python3 .claude/bin/super-board-forge.py --config <config> <verb> ...`, which picks the backend
+from the project config and answers every verb in ONE shape, with the same flags and exit codes on GitHub and
+on Azure DevOps. A lane never branches on the provider. Below, `forge` stands for that command line.
+Tests: `tests/test_forge_contract.py` runs one scenario list against both backends and fails when a stdout
+shape drifts on either side; `test_forge_github.py` pins the exact `gh` argv; `test_forge_ado*.py` the service calls.
 
 ## Choosing the provider
 
-- `--config <file>`, else `$SB_CONFIG`. Key `provider`: `"github"` (default when the key or
-  the config is absent) or `"azure-devops"`. Anything else exits 66.
-- The config is read once; it may be a FIFO. A caller that already consumed its config
-  hands the forge a fresh copy (`--config <(printf '%s\n' "$CONFIG_JSON")`).
-- Scripts pass `--config` to the forge whenever they have one.
-- `azure-devops` serves the tracker verbs and the pull-request verbs (below). A verb a backend does not
-  have exits 69 (`<provider> provider: <verb> is not implemented yet`): the Azure DevOps-only `pr create|ready|
-  comment|comments|comment-edit|links` on GitHub.
+- `--config <file>`, else `$SB_CONFIG`. Key `provider`: `"github"` (default when the key or the config is
+  absent) or `"azure-devops"`. Anything else exits 66.
+- The config is read once; it may be a FIFO. A caller that already consumed its config hands the forge a fresh
+  copy (`--config <(printf '%s\n' "$CONFIG_JSON")`). Scripts pass `--config` whenever they have one.
+- `--repo <slug>`, else config `repo.remote`, else `git remote get-url origin`. GitHub strips `https://github.com/`,
+  `git@github.com:` and a trailing `.git` to give `owner/name`; `repo` prints it (`--explicit`: no origin fallback).
+  Azure DevOps prints `<org>/<project>/<repository>`.
+- A verb a backend does not have exits 69 (`<provider> provider: <verb> is not implemented yet`). Today only
+  `board ensure` on GitHub (see "Setup-only").
 
-## Repo
+## Rules for every verb
 
-`--repo <slug>`, else config `repo.remote`, else `git remote get-url origin`. GitHub strips
-`https://github.com/`, `git@github.com:` and a trailing `.git` to give `owner/name`.
-Verbs add `--repo` to `gh` only for a repo given by `--repo` or the config, so a bare
-checkout still lets `gh` pick its own. `repo --explicit` prints that same value without the
-origin fallback (possibly empty); `repo` alone falls back to origin.
+- **Ids are opaque strings.** Comment ids, note ids and thread ids are printed by one verb and handed back to
+  another unchanged (`3.7` on Azure DevOps, `4242` or `PRRT_...` on GitHub); never parse or compare them across verbs.
+- **Ticket and PR numbers** are the issue/PR number (GitHub) or the work item/PR id (Azure DevOps).
+- **Body input** is always a file: `--body-file F`. Output is JSON (one object or array) unless the table says text.
+- **`state` / `stateReason`** use GitHub's words (`OPEN`, `CLOSED`, `MERGED`; `COMPLETED`, `NOT_PLANNED`);
+  `headRefOid` is a full 40-hex sha; `files` entries carry `path`; `labels` entries carry `name`.
+- **Reads** go through `super-board-github-read.py` (GitHub) or the same retry in the Azure DevOps transport: three
+  attempts, then the shared halt file and exit 79. **Writes** run once and are never retried; a write that failed
+  with an unknown outcome is not replayed, re-read first.
+- GitHub prefers the REST form (the separate core quota) over `gh issue`/`gh pr` (GraphQL points, see
+  `rate-limit-etiquette.md`); the ones left on GraphQL are marked below.
 
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
 | 0 | ok |
-| 64 | usage error, or a malformed read (the read helper's: valid form is quoted on stderr; the run continues). `SB_GITHUB_READ_STRICT=1` turns a malformed read into a halt (79) |
-| 3 | Azure DevOps: work item not on the board, column not on the board, or pull request not found; `pr` via the gate: the PR is closed (abandoned) |
-| 4 | `ticket claim`: already claimed (never steals) |
-| 6 | Azure DevOps `pr merge`: the head moved (TF401192); nothing merged |
-| 5, 7 | Azure DevOps `pr merge` only: 5 conflicts, 7 branch policy rejects completion (`human-gate:` line on stdout) |
+| 64 | usage error, or a malformed read (the read helper's: the valid form is quoted on stderr; the run continues). `SB_GITHUB_READ_STRICT=1` turns a malformed read into a halt (79) |
+| 3 | not found: work item not on the board, column not on the board (also `ticket create --column` on a GitHub board: nothing created), pull request not found; `pr` via the gate: the PR is closed |
+| 4 | `ticket claim`: already claimed (never steals), or the race was lost |
+| 5, 7 | `pr merge` only: 5 conflicts, 7 branch policy rejects completion (`human-gate:` line on stdout). Azure DevOps only |
+| 6 | the head moved: `pr merge` (TF401192) and `pr note` / `pr notes` with `--head` (both providers); nothing written |
 | 65 | refused rather than guess or write: `board ensure` (a non-empty extra column would be deleted); Azure DevOps `pr set-body`/`pr create` (body over 4,000 characters after the overflow) and `pr merge` (draft, not active, mergeStatus conflicts / rejectedByPolicy / failure) |
-| 66 | config unreadable, or unknown `provider` |
-| 69 | provider or verb unavailable; Azure DevOps: no credentials, or a write failed |
+| 66 | config unreadable, unknown `provider`, or a verb needs a config key it lacks (`ticket create --column` on GitHub needs `project.owner/number`) |
+| 69 | provider or verb unavailable; Azure DevOps: no credentials; a write failed, or a follow-up of a create failed (the URL and number are STILL printed, then 69) |
 | 79 | required reads halted: the shared halt file exists. Preserve work, stop dispatch, restart explicitly |
-| other | a write's own `gh` status, passed through (writes are never retried) |
+| other | a GitHub write's own `gh` status, passed through (a `gh` status that collides with a code above becomes 1) |
 
-Exit 79 is shared: both providers use one halt file (the name says github; it is not renamed
-because installs depend on it). `ado-quota.json` sits beside it.
+Exit 79 is shared by both providers: one halt file (the name says github; installs depend on it). `ado-quota.json` sits beside it.
 
-## Verbs
+## The lane operations
 
-Usage: `super-board-forge.py [--config F] [--repo R] <verb> [args]`. Reads go through
-`super-board-github-read.py` with the kind shown (retry, halt file, exit 79/64). Writes run `gh`
-directly.
+`forge <verb>`; `<N>` a ticket or PR number. "Replaces" lists the old `gh` commands.
 
-| Verb | Stdout | GitHub backend (`gh` argv; `--repo` as above) | Kind |
+### Identity, state, setup
+
+| Operation | Verb | Stdout | Replaces |
 |---|---|---|---|
-| `provider` | provider name | none | |
-| `repo [--explicit]` | `owner/name` | none (git for the origin fallback) | |
-| `check` | nothing; 79 when halted | helper `check_halt()` | |
-| `halt <reason>` | nothing; records halt, 79 | helper `halt()` | |
-| `pr head <N>` | `<headRefName> <40-hex sha>` | `pr view N --json headRefName,headRefOid -q '.headRefName + " " + .headRefOid'` | head |
-| `pr state <N>` | `{state, headRefOid, mergeCommit}` | `pr view N --json state,mergeCommit,headRefOid` | merge-state |
-| `pr metadata <N>` | `{labels, files, additions, deletions, changedFiles, body}` | `pr view N --json labels,files,additions,deletions,changedFiles,body` | metadata |
-| `pr diff <N> --meta <file>` | unified diff; checked against the metadata file | `pr diff N` | diff |
-| `pr body <N>` | `{headRefOid, body}` | `api repos/{owner}/{repo}/pulls/N --jq '{headRefOid: .head.sha, body: (.body // "")}'`, `GH_REPO` set from the repo | body |
-| `pr set-body <N> --body-file <f>` | nothing | write: `api -X PATCH repos/{owner}/{repo}/pulls/N --input -`, stdin `{"body": <file text>}` | |
-| `pr merge <N> --squash --delete-branch [--subject S] [--body-file F] --match-head <sha>` | the provider's merge output | write: `pr merge N --squash --delete-branch [--subject S] [--body-file F] --match-head-commit sha` | |
-| `pr list --state open --limit N` | `[{number,title,body,url,headRefName,files:[{path}]}]` | `pr list --state open --limit N --json number,title,body,url,headRefName,files` | prs-open |
-| `pr list --state merged --limit N` | `[{number,title,body,url}]` | `pr list --state merged --limit N --json number,title,body,url` | prs-merged |
-| `ticket view <N>` | `{number, title, body}` | `issue view N --json number,title,body` | issue |
-| `ticket list --state closed --limit N` | `[{number,title,body,stateReason}]` | `issue list --state closed --limit N --json number,title,body,stateReason` | issues-closed |
-| `ticket graph` | array of every open issue: `{number,title,body,state,labels:{nodes:[{name}]},comments:{nodes:[{body}]}}` (last 8 comments) | `api graphql --paginate --slurp` (open issues, 100 a page), pages flattened | issues |
-| `pr approval <N>` | `{state, headRefOid, closes:[ticket numbers]}` (see "Human approval") | `api graphql --paginate --slurp -f query=<approval query> -F owner= -F repo= -F pr=N`; `closes` = same-repo `closingIssuesReferences`, plus the body's closing keywords when the base is not the default branch; incomplete link pages or a snapshot that changed between pages fail | approval |
-| `ticket comments <N>` | `[[{id,body,user:{login,type},created_at,updated_at}]]` (the issue or PR conversation) | `api --paginate --slurp repos/{owner}/{repo}/issues/N/comments?per_page=100` | comments |
-| `permission <login>` | `{permission}`: `admin`, `maintain`, `write`, `triage`, `read`, `none`; `null` for a string that is not a login (no call) | `api repos/{owner}/{repo}/collaborators/<login>/permission` | permission |
-| `board <verb> ...` | reserved: `super-board-card.sh` hands an `azure-devops` config to this | none on GitHub (the card script owns its verbs) | |
+| provider, repo | `provider` · `repo [--explicit]` | name · slug | `git remote get-url origin` parsing |
+| is the run halted | `check` | nothing; 79 when halted | `super-board-github-read.py --check` |
+| record an unknown write outcome | `halt <reason>` | nothing; records the halt, 79 | `super-board-github-read.py --halt` |
+| who am I | `whoami` | `{login,id}` | `gh api user`, `gh auth status` |
+| quota | `quota` | `{remaining,limit,reset,at,seen}`; GitHub adds `graphql` and `core` (`{limit,remaining,used,reset}`), `remaining` is the GraphQL bucket; Azure DevOps adds `cost`/`total_cost` when the service sends only a cost. `quota --throttle` / `--take-throttle` (Azure DevOps): `{throttled,throttled_at}` | `gh api rate_limit` (use `sb_gh_guard_check` / `sb_gh_guard_summary`, which are provider-aware, before a burst) |
+| default branch, empty repo, base exists | `repository` | `{repository,defaultBranch,empty,base,baseExists}` (`defaultBranch` null when `empty`; `base` = config `base_branch`) | `gh repo view --json defaultBranchRef`, `gh api repos/{o}/{r}` |
+| who may approve | `permission <login>` | `{permission}`: GitHub `admin\|maintain\|write\|triage\|read\|none`; Azure DevOps `approve` for `ado.approvers`, else `none` | `gh api repos/{o}/{r}/collaborators/<login>/permission` |
 
-Shape rules for any backend: the field names above are exact; `state`/`stateReason` use
-GitHub's words (`OPEN`, `CLOSED`, `MERGED`, `COMPLETED`, `NOT_PLANNED`); `headRefOid` is a
-full 40-hex sha; `files` entries carry `path`; `labels` entries carry `name`.
+### Tickets
 
-## Azure DevOps tracker backend
+| Operation | Verb | Stdout | Replaces |
+|---|---|---|---|
+| read a ticket | `ticket view <N>` | `{number,title,body,state,stateReason,labels:[{name}],assignees:[{login}],url}` | `gh issue view N --json ...`, `gh api repos/{o}/{r}/issues/N` |
+| list tickets | `ticket list [--state open\|closed\|all] [--label L]... [--limit N]` (default open, 30; every `--label` must match) | array of the same | `gh issue list --state --label --json ...`, `gh issue list -l source:qa` |
+| open tickets with their last 8 comments (dependency graph) | `ticket graph` | `[{number,title,body,state,labels:{nodes:[{name}]},comments:{nodes:[{body}]}}]` | `gh api graphql` issues query |
+| every ticket, any state (dedupe) | `ticket history` | `[{number,state,body}]` | `super-board-github-read.py --issue-history` |
+| create | `ticket create --title T --body-file F [--label L]... [--column C]` | URL, then the number (last line). `--column` places the card (GitHub: needs `project.owner/number`; adds it to the project, then moves it). A failed placement still prints both, then exits 69 | `gh issue create`, `gh project item-add` + `card.sh move` |
+| edit, label | `ticket edit <N> [--title T] [--body-file F] [--add-label L]... [--remove-label L]...` | nothing. Removing a label that is not there is fine | `gh issue edit`, `gh api POST/DELETE issues/N/labels` |
+| close | `ticket close <N> --reason completed\|not-planned` | `closed #N (reason)`. Also moves the card to Done (GitHub: when `project` is configured; a failed move only warns) | `gh issue close`, `gh api PATCH issues/N -f state=closed -f state_reason=...` |
+| comment | `ticket comment <N> --body-file F` | the comment id | `gh issue comment`, `gh api POST issues/N/comments` |
+| read comments | `ticket comments <N>` | `[[{id,body,user:{login,type},created_at,updated_at}]]`, one page; Azure DevOps adds `version` | `gh issue view --json comments`, `gh api --paginate issues/N/comments` |
+| edit a comment in place | `ticket comment-edit <N> <ID> --body-file F` | the id | `gh api -X PATCH issues/comments/ID` |
+| claim | `ticket claim <N>` | `claimed #N`; 4 when someone else holds it (never steals) or the race was lost | `gh issue edit --add-assignee` + the re-read |
+| release | `ticket release <N> [--force]` | `released #N (<who>)` or `released #N (nothing held)`; idempotent | `gh issue edit --remove-assignee`, `gh api DELETE issues/N/assignees` |
+| read the claim | `ticket view <N>`: `assignees` non-empty = claimed | | `gh issue view --json assignees` |
+
+**Claim.** GitHub: the claimant is `notifications.bot_identity`; `"auto"` or unset = the authenticated login
+(`whoami`; an App installation token has no `/user`, so name the bot login). The verb reads the assignees, exits 4
+unless none or only the bot is there, adds the bot, RE-READS and requires the list to be exactly `[bot]` (an add does
+not fail when someone else holds the card: issues take up to 10 assignees), else removes its own assignee and exits 4.
+`[bot]` suffixes and case are ignored when comparing. `--force` on `release` changes nothing on GitHub (a human
+assignee is not a leaked claim). Azure DevOps: a per-holder tag, see below. Callers no longer skip the claim when
+`bot_identity` is unset.
+
+### Board
+
+| Operation | Verb | Stdout | Replaces |
+|---|---|---|---|
+| the whole board | `board items` | `{items:[{id,title,status,labels,content:{type,number,title,url,repository}}],totalCount}`; Azure DevOps adds `content.assignees` | `gh project item-list`, `card.sh items` |
+| a card's column | `board status <N>` | column name; 3 not on the board | `card.sh status` |
+| move a card | `board move <N> <Column>` | `moved #N → Column`; 3 unknown column | `card.sh move`, `gh project item-edit` |
+| the card's id | `board item-id <N>` | the id (Azure DevOps: `N`) | `card.sh item-id` |
+| ids | `board ids` | provider-specific shape (GitHub `{projectId,fieldId,options}`, Azure DevOps `{board,columnField,columns}`); no lane needs it | `card.sh ids` |
+| make the board fit | `board ensure [--check]` | Azure DevOps only: one `changed:`/`needed:` line per change; 1 `--check` found changes; 65 refused | see "Setup-only" |
+
+On GitHub the board verbs ARE `super-board-card.sh` (cached ids, 1 point a move); the forge hands it
+`--owner/--number/--repo` from the config, never `SB_CONFIG`.
+
+### Pull requests
+
+| Operation | Verb | Stdout | Replaces |
+|---|---|---|---|
+| create | `pr create --base B --head H --title T --body-file F [--draft] [--label L]... [--closes <N>]...` | URL, then the number (last line). `--closes` links the ticket: GitHub appends `Closes #N` to the body when it has no closing keyword for it; Azure DevOps links the work item. A failed label still prints both, then 69 | `gh pr create`, `gh api POST pulls` |
+| draft to ready | `pr ready <N>` | `ready #N`; idempotent | `gh pr ready` (GraphQL, no REST form) |
+| the PR at a glance | `pr view <N>` | `{number,title,url,state,isDraft,headRefName,headRefOid,baseRefName,mergeCommit:{oid}\|null,labels:[{name}]}` | `gh pr view --json baseRefName,state,mergeCommit,headRefOid,...`, `gh api pulls/N` |
+| branch and head | `pr head <N>` | `<branch> <40-hex sha>` | `gh pr view --json headRefName,headRefOid` |
+| state | `pr state <N>` | `{state,headRefOid,mergeCommit}` (`mergeCommit` only once merged) | `gh pr view --json state,mergeCommit` |
+| body, the head it belongs to | `pr body <N>` | `{headRefOid,body}` | `gh api pulls/N --jq .body` |
+| write the body | `pr set-body <N> --body-file F` | nothing (use `super-board-pr-body.sh`, which rewrites one block) | `gh pr edit --body-file`, `gh api PATCH pulls/N` |
+| files, counts, labels | `pr metadata <N>` | `{labels,files:[{path,additions,deletions}],additions,deletions,changedFiles,body}` | `gh pr view --json files,...`, `gh api pulls/N/files` |
+| the diff | `pr diff <N> --meta <file>` (`--meta` from `pr metadata`, taken right before) | unified diff, validated against it | `gh pr diff` |
+| CI and policy state | `pr checks <N>` | `[{name,status:pending\|pass\|fail\|skipped,required}]`; `[]` when there are none. GitHub: check runs AND commit statuses of the head, `required` = branch protection (1 GraphQL point); Azure DevOps: policy evaluations (`required` = blocking) | `gh pr checks`, `gh api commits/<sha>/check-runs` |
+| open or merged PRs | `pr list --state open\|merged --limit N` | open `[{number,title,body,url,headRefName,files:[{path}]}]`; merged `[{number,title,body,url}]` | `gh pr list --json ...` |
+| find a PR by branch | `pr refs --state open\|merged --limit N`, pick the `headRefName` | `[{number,headRefName,baseRefName,headRefOid}]` (merged rows only when they carry a head) | `gh pr list --search "head:..."`, `gh api pulls?head=` |
+| recent merges | `pr merged --since ISO --limit N` | `[{number,title,url,mergedAt,author:{login,type}}]`, newest first | `gh pr list --state merged --json mergedAt,...` |
+| tickets the PR closes | `pr links <N>` | `{closes:[numbers]}` | `closingIssuesReferences` |
+| human approval inputs | `pr approval <N>` | `{state,headRefOid,closes}` (see "Human approval") | the approval GraphQL |
+| merge | `pr merge <N> --squash --delete-branch [--subject S] [--body-file F] --match-head <sha>` | the provider's merge output (Azure DevOps: `merged #N as <sha>`); only through the merge gate | `gh pr merge` |
+
+### Pull request comments, review notes and threads
+
+| Operation | Verb | Stdout | Replaces |
+|---|---|---|---|
+| comment on the PR | `pr comment <N> --body-file F` | the comment id | `gh pr comment`, `gh api POST issues/N/comments` |
+| read the conversation | `pr comments <N>` | `[[{id,body,user:{login,type},created_at,updated_at}]]`, oldest first, ids as strings. Azure DevOps lists file-thread comments here too (GitHub keeps them in `pr threads`); the Reviewer report is found by its marker | `gh pr view --json comments`, `gh api --paginate issues/N/comments` |
+| edit a comment in place (the Reviewer report) | `pr comment-edit <N> <id> --body-file F` | the id | `gh api -X PATCH issues/comments/<id>` |
+| one inline note | `pr note <N> --file <path> [--line L [--end-line M]] [--side left\|right] --body-file F [--head <sha>]` | the note's id. No `--line` = a whole-file note; `--line L --end-line M` = a range (L first, M last); `--side` default `right` (the new file), `left` = the deleted side. `--head` = the head you read: the PR moved, exit 6, nothing written | `gh api POST pulls/N/comments` (`subject_type`/`line`/`side`/`start_line`) |
+| several notes at once | `pr notes <N> --notes-file F [--head <sha>]`, `F` = JSON `[{file,line?,end_line?,side?,body}]` | `[{index,id}]` (`id` null when written but not read back). GitHub: line notes in ONE review with `event: COMMENT`, whole-file notes as their own comments; Azure DevOps: one thread each | `gh api POST pulls/N/reviews` |
+| edit a note in place | `pr note-edit <N> <id> --body-file F` | the id | `gh api -X PATCH pulls/comments/<id>` |
+| read review threads | `pr threads <N>` | `[{id,path,status,resolved,line,startLine,side,outdated,comments:[{id,author:{login,type},body,createdAt}]}]`: file threads only on GitHub (`status` `active\|resolved`), every live thread on Azure DevOps (`path` null for a conversation thread; `status` its service word; `outdated` always false). `line` = the last line of the range, `startLine` only for a multi-line range, `side` `left\|right\|null` | the `reviewThreads` GraphQL, `gh api pulls/N/comments` |
+| resolve a thread | `pr thread-resolve <N> <thread id>` | `resolved <id>` (GitHub `resolveReviewThread`; Azure DevOps status `fixed`) | `gh api graphql resolveReviewThread` |
+
+Author notes ([pr-author-notes.md](pr-author-notes.md)): match existing notes by `path` and marker in `pr threads`,
+only edit ones whose `author.login` is `whoami`'s login, `pr note-edit` the owned note, `pr note`/`pr notes` for new
+ones with `--head` set, then read `pr threads` back. A note with an unknown outcome is read back, never replayed.
+
+### Setup-only: stays provider-specific
+
+Account administration is not lane work and is not wrapped: `gh auth login|status|refresh|switch`, the
+second-account flow (`second-account.md`: collaborator invitations, `gh api users/<bot>`), `gh repo create|edit|delete`,
+`gh project create|list|view|field-list|item-*` (onboarding), `gh label create|edit|delete`. Their Azure DevOps
+counterparts are credentials (`AZURE_DEVOPS_EXT_PAT` or `az login`), the `ado` config block and `board ensure`.
+`board ensure` has no GitHub form on the forge: onboarding runs `python3 .claude/bin/super-board-setup.py check|fix`
+(the neutral entry: on Azure DevOps it runs `board ensure`; on GitHub the Status options and labels come from
+`super-board-setup.py board-migrate --config <cfg> [--dry-run]`).
+
+## Differences a caller may meet (everything else is identical)
+
+- A ticket or PR that does not exist: Azure DevOps exits 3; GitHub's `Could not resolve to ...` is a permanent read
+  error and halts (79). Do not probe numbers you did not get from a read.
+- `ticket claim` on Azure DevOps is a tag, so two claimers on the SAME machine and checkout are not separated by it
+  (the local inflight lockfiles cover that); on GitHub the assignee is the lock.
+- Azure DevOps `pr metadata`/`pr diff` come from the local clone (no server diff) and serve open PRs only; a body
+  over 4,000 characters overflows into a thread (see below).
+- `pr checks`' `required` is branch protection on GitHub and blocking policy on Azure DevOps.
+- Drafts: `pr create --draft` then `pr ready` on both. GitHub will not merge a draft; Azure DevOps refuses with 65.
+- GitHub-only: the GraphQL point budget (price list in `rate-limit-etiquette.md`; `sb_gh_guard_check`), `gh` auth
+  scopes, secondary rate limits. Azure DevOps-only: tags as claims, the 4,000-character description, pinned-commit
+  completion, 429 throttling. Both stay behind the guard functions, which are provider-aware.
+
+
+## Azure DevOps backend
 
 Code: `super-board-forge-ado.py` (mixed into the forge's `AzureDevOpsBackend`). stdlib `urllib`
-only. Tracker verbs: ticket, board, comment and claim. The pull-request verbs are in `super-board-forge-ado-pr.py` (see "Azure DevOps pull-request backend").
+only. Tracker verbs: ticket, board, comment and claim; the verb table above is the contract, this is how the service
+answers it. The pull-request verbs are in `super-board-forge-ado-pr.py` (see "Azure DevOps pull-request backend").
 
 ### Config
 
@@ -117,34 +211,36 @@ None: exit 69 naming the three options.
 | issue comment | work item comment (Markdown) |
 | `gh api rate_limit` | none: `X-RateLimit-*` headers are saved to `ado-quota.json`; `quota` prints it plus `seen` |
 
-### Verbs
 
-| Verb | Stdout | Exit |
-|---|---|---|
-| `board ids` | `{board, columnField, columns:[names]}` (cached) | |
-| `board items` | `{items:[{id,title,status,labels:[],content:{type:"Issue",number,title,url,repository:"<org>/<project>",assignees}}],totalCount}`; WIQL for the board's types, batch reads, status from the board's own column field; cards with no column skipped | |
-| `board status <N>` | column name | 3 not on board |
-| `board item-id <N>` | `N` | |
-| `board move <N> <Status>` | `moved #N → Status` | 3 unknown column (cache miss refreshes once) |
-| `board ensure [--check]` | one `changed:` (or `needed:`) line per change, else `board ok: ...` | 1 `--check` found changes; 65 refused |
-| `ticket view <N>` | `{number,title,body,state,stateReason,labels:[{name}],assignees:[{login}],url}` | 3 not found |
-| `ticket list [--state open\|closed\|all] [--limit N]` | array of the same | |
-| `ticket graph` | open tickets in the GitHub graph shape, each with its last 8 comments. One comments call per open ticket: the cost driver | |
-| `ticket history` | `[{number,state,body}]`, every state | |
-| `ticket create --title T --body-file F [--label L]... [--column C]` | URL, then the number (last line). When the ticket was created but the move into `--column` failed, URL and number are STILL printed (then a non-zero exit), so a filer can report "filed, not placed" | 3 unknown column (nothing created) |
-| `ticket edit <N> [--title] [--body-file] [--add-label L]... [--remove-label L]...` | | |
-| `ticket close <N> --reason completed\|not-planned` | `closed #N (reason)`; moves to Done; not-planned adds tag `not-planned` | |
-| `ticket comment <N> --body-file F` | comment id | |
-| `ticket comments <N>` | `[[{id,body,user:{login,type},created_at,updated_at,version}]]`, `[[]]` when none. `created_at`/`updated_at` = `createdDate`/`modifiedDate`; `version` starts at 1 and grows on every edit | |
-| `ticket comment-edit <N> <ID> --body-file F` | comment id | |
-| `ticket claim <N>` | `claimed #N`. Reads; a claim tag that is not ours: exit 4; ours: exit 0 (idempotent); else `add` ours, re-read and verify. If another holder's tag landed too, the lexicographically smallest claim tag wins and the loser takes its own tag back (rev-tested replace) | 4 already claimed or lost the race |
-| `ticket release <N> [--force]` | `released #N (<tags>)`; removes OUR claim tag only; `--force` removes every claim tag (crash-recovery sweep). Idempotent | |
-| `whoami` | `{login,id}` | |
-| `permission <login>` | `{permission}`: `"approve"` when `ado.approvers` lists the unique name (case-insensitive), else `"none"`. No call | 66 `ado.approvers` not a list of names |
-| `quota` | saved `ado-quota.json` plus `seen`; when the service sends only `X-RateLimit-Cost`, `cost` (last call) and `total_cost` (running) | |
-| `quota --throttle` / `--take-throttle` | `{throttled, throttled_at}`: the 429s the transport recorded (`ado-throttle.json`, beside `ado-quota.json`) since the last take. `--take-throttle` also resets the count, so a caller asking once per wave sees only that wave's | |
-| `repository` | `{repository, defaultBranch, empty, base, baseExists}`: `empty` = no branch at all (a NEW Azure Repos repository has none and a PR cannot be opened); `base` = config `base_branch`, `baseExists` whether that branch exists (null when unset). Used by the onboarding check | 79 the repository is not found or the read is rejected |
-| `check`, `halt <reason>`, `provider`, `repo` | as above | 79 when halted |
+### Service notes per verb
+
+- `board ids` caches `{board, columnField, columns}`. `board items` runs WIQL for the board's types, reads in batches and
+  takes the status from the board's own column field; cards with no column are skipped. `board move` writes the column
+  field (an unknown column refreshes the cache once, then exits 3).
+- `board ensure [--check]` prints one `changed:` (or `needed:`) line per change, else `board ok: ...`; exits 1 when
+  `--check` found changes and 65 when it refused. See below.
+- `ticket view/list`: `state` is the state category (Completed or Removed = CLOSED; Removed or tag `not-planned` =
+  `NOT_PLANNED`, else `COMPLETED`); a claim tag shows as `assignees: [{login}]` (the `whoami` login) and is hidden from `labels`.
+  `ticket list --label L` filters on the tags (every label must be there). `ticket graph` makes one comments call per
+  open ticket: the cost driver. `ticket history` is every state.
+- `ticket create` makes the work item type from `work_item_types` by label (a Bug body goes in Repro Steps), sets the
+  body as Markdown and tags = labels. When the ticket was created but the move into `--column` failed, the URL and
+  number are STILL printed (then a non-zero exit) so a filer can report "filed, not placed".
+- `ticket edit`: `--add-label` is an `add` of only the missing tags (the service merges, no rev test); removing or setting is
+  read, then `[test /rev, replace <exact list>]` (`remove` when empty), retried on a stale rev.
+- `ticket close --reason not-planned` adds the tag `not-planned`, then moves the card to Done.
+- `ticket comment` / `comments`: work item comments (Markdown); `comments` carries `version` (1 = never edited) and
+  `created_at`/`updated_at` = `createdDate`/`modifiedDate`.
+- `ticket claim` reads; a claim tag that is not ours: exit 4; ours: exit 0 (idempotent); else `add` ours, re-read and
+  verify. If another holder's tag landed too, the lexicographically smallest claim tag wins and the loser takes its own tag
+  back (rev-tested replace). `ticket release` removes OUR claim tag only; `--force` removes every claim tag (crash-recovery
+  sweep). Idempotent.
+- `whoami` = `connectionData`'s authenticated user; `permission` is `approve` for a unique name in `ado.approvers`
+  (case-insensitive), else `none`, with no call (66 when `ado.approvers` is not a list of names).
+- `quota`: the saved `ado-quota.json` plus `seen`; `--throttle` / `--take-throttle` read the 429s the transport recorded
+  (`ado-throttle.json`); `--take-throttle` also resets the count, so a caller asking once per wave sees only that wave's.
+- `repository`: `empty` = no branch at all (a NEW Azure Repos repository has none and a PR cannot be opened); `base` =
+  config `base_branch`, `baseExists` whether it exists (null when unset). Exit 79 when the repository is not found.
 
 The holder is a stable 6-hex id: first 6 hex of sha256 over hostname, login user and the main
 checkout's absolute path; env `SB_CLAIM_HOLDER` overrides it. It never carries a per-run nonce, so
@@ -196,6 +292,7 @@ re-read and retry, max 3. Halt messages say Azure DevOps.
 - `allowedMappings.InProgress` lists states alphabetically, not in workflow order; use the states endpoint.
 - WIQL returns ids only and truncates at 20,000.
 
+
 ## Azure DevOps pull-request backend
 
 Code: `super-board-forge-ado-pr.py`. Repository = `ado.repository` (default: the project). Resource
@@ -205,26 +302,33 @@ Config `repo.path` is the local clone used for `pr metadata` / `pr diff`.
 Labels come from `GET …/pullrequests/{id}/labels` (`{count, value:[{id,name,active}]}`); the single-PR GET has no `labels` key
 and is not trusted for them. A failed labels read is a failed required read (halt), never "no labels": merge policy matches on them.
 
-| Verb | Stdout | Exit |
-|---|---|---|
-| `pr head <N>` | `<branch> <40-hex>`: `sourceRefName` without `refs/heads/`, `lastMergeSourceCommit` | 3 not found |
-| `pr state <N>` | `{state, headRefOid, mergeCommit}`; `active`=OPEN, `completed`=MERGED, `abandoned`=CLOSED; `mergeCommit:{oid}` only when completed, else null | 69 completed without a merge commit |
-| `pr metadata <N>` | `{labels, files:[{path,additions,deletions}], additions, deletions, changedFiles, body}` from local git; `body` is the logical body | 69 fetch/head mismatch/validation |
-| `pr diff <N> --meta F` | unified diff from local git, validated against `F` | 64 no `--meta`; 69 |
-| `pr body <N>` | `{headRefOid, body}`: the LOGICAL body (overflow put back) | |
-| `pr set-body <N> --body-file F` | nothing | 65 still over 4,000 after the overflow; nothing written |
-| `pr merge <N> --squash --delete-branch [--subject S] [--body-file F] --match-head <sha>` | `merged #N as <sha>`; on 7 also `human-gate: policy — Azure DevOps branch policy blocks completion: <mergeFailureMessage or "see the PR's policy list">` | 6 head moved (TF401192); 5 `mergeStatus` conflicts; 7 `rejectedByPolicy`; 65 draft, not active, `mergeStatus` failure or other definite refusal; 69 only when the outcome is unknown (poll timeout, transport failure after the PATCH) |
-| `pr list --state open\|merged --limit N` | prs-open / prs-merged shapes (open: + `headRefName`, `files:[{path}]` without the leading `/`) | |
-| `pr create --base B --head H --title T --body-file F [--draft] [--label L]... [--closes <ticket>]...` | URL, then the number (last line) | 65 body too long, nothing created |
-| `pr ready <N>` | `ready #N` | |
-| `pr comment <N> --body-file F` | `<threadId>.<commentId>` | |
-| `pr comments <N>` | `[[{id:"<thread>.<comment>", body, user:{login,type:"User"}, created_at, updated_at}]]`, oldest first. `created_at` = `publishedDate`; `updated_at` = `lastContentUpdatedDate` (else `lastUpdatedDate`), because `lastUpdatedDate` also moves when nothing in the text changed | |
-| `pr comment-edit <N> <thread>.<comment> --body-file F` | the id | 64 bad id |
-| `pr links <N>` | `{closes:[<work item ids>]}` from the PR's linked work items | |
-| `pr approval <N>` | `{state, headRefOid, closes}`: `pr state`'s state and head, `pr links`' work items (never text parsing, whatever the target branch) | 3 not found |
-| `pr refs --state open\|merged --limit N` | `[{number, headRefName, baseRefName, headRefOid}]` in ONE list call (`pr list` also reads every open PR's changed files). `merged` rows are only `completed` PRs that carry a recorded source head (`lastMergeSourceCommit`), anything else is left out rather than guessed. Callers: the cleanup hook, stop. GitHub backend: 69 (those scripts keep their own `gh` calls there) | |
-| `pr merged --since ISO --limit N` | `[{number, title, url, mergedAt, author:{login,type}}]`: completed PRs with `closedDate` at or after `since`, newest first; `type` is `Bot` for a service identity (`[bot]`, `svc.` prefix, "Build Service"). Caller: `collect_prs.py`. GitHub backend: 69 | 64 `--since` is not ISO-8601 |
-| `pr threads <N>` | `[{id, path, status, resolved, comments:[{author:{login,type}, body, createdAt}]}]`: every live thread; `path` = `threadContext.filePath` without the leading `/` (null for a conversation thread), `resolved` true for `fixed`, `closed`, `wontFix`, `byDesign`. System comments, deleted ones and the overflow thread are left out. Caller: `collect_prs.py`. GitHub backend: 69 | 3 not found |
+### Service notes per verb
+
+- `pr head`: `sourceRefName` without `refs/heads/` and `lastMergeSourceCommit`; `pr state`: `active`=OPEN,
+  `completed`=MERGED, `abandoned`=CLOSED, `mergeCommit:{oid}` only when completed (69 when completed without one).
+  `pr view` adds the title, URL, draft flag, base branch and the labels (from the labels endpoint).
+- `pr metadata` / `pr diff`: local git (see "No server-side diff"); 69 on a fetch/head mismatch or a failed validation, 64 `pr diff` without `--meta`.
+- `pr set-body`: 65 when still over 4,000 after the overflow, nothing written. `pr create`: 65 body too long, nothing created.
+- `pr merge`: see "Merge: pinned commit, then poll"; exit 3 when not found.
+- `pr list`: `files` come from the last iteration's changes, without the leading `/`. `pr refs`: ONE list call (`pr list` also
+  reads every open PR's changed files); `merged` rows are only `completed` PRs that carry a recorded source head
+  (`lastMergeSourceCommit`), anything else is left out rather than guessed. Callers: the cleanup hook, stop.
+  `pr merged`: completed PRs with `closedDate` at or after `since`, newest first; `type` is `Bot` for a service identity
+  (`[bot]`, `svc.` prefix, "Build Service"); 64 when `--since` is not ISO-8601. Caller: `collect_prs.py`.
+- `pr links`: the PR's linked work items (never text parsing); `pr approval` = `pr state`'s state and head plus them.
+- `pr comment` prints `<threadId>.<commentId>`; `pr comments` leaves out system comments, deleted ones and the overflow thread
+  (`created_at` = `publishedDate`; `updated_at` = `lastContentUpdatedDate`, else `lastUpdatedDate`, which also moves when the
+  text did not change); `pr comment-edit` takes that id (64 for a bad one).
+- `pr threads`: every live thread; `path` = `threadContext.filePath` without the leading `/`; `resolved` is true for `fixed`,
+  `closed`, `wontFix`, `byDesign`; `line`/`startLine`/`side` come from `rightFileStart/End` (or `leftFile...`).
+- `pr note`: a thread with `threadContext` = `{filePath: "/<path>", rightFileStart: {line, offset: 1}, rightFileEnd: {line, offset: 1}}`
+  (`leftFile...` for `--side left`; the path only for a whole-file note), status active. `pr notes` posts one thread each
+  in order; when one fails it names the ones already written. `--head` is checked against the PR's current source commit first.
+  `pr note-edit` is `pr comment-edit`. `pr thread-resolve` is `PATCH .../threads/{id}` `{"status":"fixed"}`.
+- `pr checks`: `GET {project}/_apis/policy/evaluations?artifactId=vstfs:///CodeReview/CodeReviewId/{projectId}/{pullRequestId}&api-version=7.1-preview.1`
+  (`projectId` from the PR's `repository.project.id`, else the project lookup). `status` queued|running = pending, approved =
+  pass, rejected|broken = fail, notApplicable = skipped; `name` = the policy type (`<type>: <display name>` when it has one);
+  `required` = `configuration.isBlocking`. No policies: `[]`.
 
 `pr list` `body` is the raw description: a moved history block shows as its stub line. `pr comments` leaves out
 `system` comments, deleted ones and the overflow thread. `$top` is passed as `--limit`.
@@ -384,7 +488,46 @@ There is no quota endpoint; the transport saves `X-RateLimit-*` headers (`ado-qu
   is `ticket list --state open --limit N`.
 - `super-board-run.sh` (legacy `claude-p`) exits 78 on any provider but GitHub.
 
-## Not behind the forge yet
 
-The card verbs in `super-board-card.sh` and the lane scripts call `gh` directly on GitHub (they hand an
-`azure-devops` config to the forge). `super-board-preflight.sh` skips the GitHub quota guard on Azure DevOps.
+## GitHub backend
+
+Code: the original verbs in `super-board-forge.py`, the lane verbs in `super-board-forge-github.py`. Reads use the read
+helper's kinds (`issue`, `issues-closed`, `tickets`, `pr-view`, `refs`, `threads`, `checks`, `comments`, `approval`,
+`permission`, `body`, `metadata`, `diff`, `merge-state`, `head`, `prs-open`, `prs-merged`, `issues`, `issue-history`, `quota`,
+`object`, `array`, `scalar`); a payload of the wrong shape three times is exit 64 (the caller's malformed read), a failing
+`gh` three times is the halt. Verbs add `--repo` to `gh` only for a repo given by `--repo` or the config, so a bare checkout
+still lets `gh` pick its own; the REST verbs set `GH_REPO` for the `{owner}/{repo}` placeholders instead.
+
+| Verb | `gh` it runs |
+|---|---|
+| `pr head` | `pr view N --json headRefName,headRefOid -q '.headRefName + " " + .headRefOid'` (read, `head`) |
+| `pr state` | `pr view N --json state,mergeCommit,headRefOid` (`merge-state`) |
+| `pr metadata` | `pr view N --json labels,files,additions,deletions,changedFiles,body` (`metadata`) |
+| `pr diff N --meta F` | `pr diff N` (`diff`, checked against the metadata file) |
+| `pr body` / `pr set-body` | REST `api repos/{o}/{r}/pulls/N --jq '{headRefOid: .head.sha, body: (.body // "")}'` / `api -X PATCH repos/{o}/{r}/pulls/N --input -` with stdin `{"body": ...}` |
+| `pr merge` | `pr merge N --squash --delete-branch [--subject S] [--body-file F] --match-head-commit sha` (a `gh` exit of 5, 6, 7 or 65 is normalised to 1: those codes cannot come from GitHub) |
+| `pr list --state open\|merged` | `pr list --state S --limit N --json number,title,body,url[,headRefName,files]` |
+| `pr view` | REST `api repos/{o}/{r}/pulls/N --jq <object>` (`pr-view`) |
+| `pr refs` / `pr merged` | `pr list --state S --limit N --json number,headRefName,baseRefName,headRefOid` / `--json number,title,url,mergedAt,author` |
+| `pr links` / `pr approval` | `api graphql --paginate --slurp` approval query (`closingIssuesReferences`, plus the body's closing keywords when the base is not the default branch; incomplete link pages or a snapshot that changed between pages fail) |
+| `pr create` | REST `api -X POST repos/{o}/{r}/pulls --input -` `{title,head,base,body,draft}`, then `POST issues/N/labels` |
+| `pr ready` | `pr ready N` |
+| `pr comment` / `pr comments` / `pr comment-edit` | REST `POST issues/N/comments` / `GET --paginate issues/N/comments?per_page=100` / `PATCH issues/comments/ID` |
+| `pr note` | REST `POST pulls/N/comments` `{body,commit_id,path,line,side[,start_line,start_side]}`; no line: `subject_type: "file"` |
+| `pr notes` | one `POST pulls/N/reviews` `{commit_id,event:"COMMENT",comments:[...]}` for the line notes, `GET pulls/N/reviews/ID/comments` to read the ids back; whole-file notes as `POST pulls/N/comments` |
+| `pr note-edit` | REST `PATCH pulls/comments/ID` |
+| `pr threads` | `api graphql --paginate --slurp` `reviewThreads(first:100)` with `comments(first:100)` (≈1 point; a thread with more than 100 comments is cut) |
+| `pr checks` | `api graphql --paginate --slurp` `commits(last:1){statusCheckRollup{contexts(first:100){... isRequired(pullRequestNumber:N)}}}` |
+| `pr thread-resolve` | `api graphql -f query=mutation{resolveReviewThread} -f threadId=ID` (a write, once) |
+| `ticket view` | `issue view N --json number,title,body,state,stateReason,labels,assignees,url` (`issue`; 1 point, kept so callers' `gh issue view` stubs still match) |
+| `ticket list` | `issue list --state S --limit N [--label L]... --json <same fields>` (`issues-closed` for closed, else `tickets`) |
+| `ticket graph` / `ticket history` | `api graphql --paginate --slurp` open issues with their last 8 comments / all issues, `number state body` |
+| `ticket create` | REST `POST repos/{o}/{r}/issues --input -` `{title,body,labels}`; `--column`: `board ids` first (exit 3 when unknown, nothing created), then `project item-add N --owner O --url U` and `board move` |
+| `ticket edit` | REST `PATCH issues/N` `{title,body}`, `POST issues/N/labels` `{labels}`, `DELETE issues/N/labels/<label>` (a 404 is fine) |
+| `ticket close` | REST `PATCH issues/N` `{state:"closed",state_reason:"completed"\|"not_planned"}`, then `board move N Done` when `project` is set (a failure only warns) |
+| `ticket comment` / `comment-edit` | REST `POST issues/N/comments` `{body}` / `PATCH issues/comments/ID` |
+| `ticket comments` | `api --paginate --slurp repos/{o}/{r}/issues/N/comments?per_page=100` (`comments`) |
+| `ticket claim` / `release` | REST `GET issues/N` assignees, `POST issues/N/assignees` `{assignees:[bot]}` and the re-read / `DELETE issues/N/assignees` |
+| `whoami` / `quota` / `repository` | `api user` / `api rate_limit` plus GraphQL's own `rateLimit` (REST misreports that bucket) / `api repos/{o}/{r}`, `branches?per_page=1`, `git/matching-refs/heads/<base>` |
+| `permission` | `api repos/{o}/{r}/collaborators/<login>/permission` (`null` for a string that is not a login: no call) |
+| `board ...` | `super-board-card.sh` (`--owner/--number/--repo` from the config) |

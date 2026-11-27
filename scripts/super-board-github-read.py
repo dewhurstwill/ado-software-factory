@@ -49,6 +49,11 @@ FORMS = {
     'prs-open': 'pr list --state open --json number,title,body,url,headRefName,files',
     'prs-merged': 'pr list --state merged --json number,title,body,url',
     'issues-closed': 'issue list --state closed --json number,title,body,stateReason',
+    'tickets': 'issue list --state open --json number,title,body,state,stateReason,labels,assignees,url',
+    'pr-view': 'api repos/{owner}/{repo}/pulls/<N> --jq <the object built by super-board-forge.py pr view>',
+    'refs': 'pr list --state open --json number,headRefName,baseRefName,headRefOid',
+    'threads': 'api graphql --paginate --slurp -f query=<reviewThreads query of super-board-forge-github.py> -F owner= -F repo= -F pr=<N>',
+    'checks': 'api graphql --paginate --slurp -f query=<statusCheckRollup query of super-board-forge-github.py> -F owner= -F repo= -F pr=<N>',
     'issues': ('api graphql --paginate --slurp -f query=\'query($owner:String!,$repo:String!,$endCursor:String){ '
                'repository(owner:$owner,name:$repo){ issues(states:OPEN,first:100,after:$endCursor){ '
                'pageInfo{ hasNextPage endCursor } nodes{ number title body state labels(first:30){ nodes{ name } } '
@@ -302,6 +307,38 @@ def validate(text, kind, meta=None):
                         and all(isinstance(f, dict) and isinstance(f.get('path'), str) and f['path'] for f in entry['files']), 'open PR branch/files missing')
             if kind == 'issues-closed':
                 require(entry.get('stateReason') in ('COMPLETED', 'NOT_PLANNED', 'REOPENED', None) and 'stateReason' in entry, 'closed issue reason missing')
+    elif kind == 'tickets':
+        require(isinstance(value, list), 'required ticket list missing')
+        require(all(isinstance(e, dict) and type(e.get('number')) is int and e['number'] > 0
+                    and isinstance(e.get('title'), str) for e in value), 'ticket identity missing')
+    elif kind == 'pr-view':
+        require(isinstance(value, dict) and type(value.get('number')) is int and value.get('state') in ('OPEN', 'CLOSED', 'MERGED')
+                and re.fullmatch(r'[0-9a-f]{40}', value.get('headRefOid') or '') and isinstance(value.get('baseRefName'), str)
+                and bool(value['baseRefName']) and isinstance(value.get('labels'), list), 'PR view fields missing')
+    elif kind == 'refs':
+        require(isinstance(value, list) and all(isinstance(e, dict) and type(e.get('number')) is int
+                and isinstance(e.get('headRefName'), str) and isinstance(e.get('baseRefName'), str)
+                and (e.get('headRefOid') in (None, '') or re.fullmatch(r'[0-9a-f]{40}', e['headRefOid'])) for e in value),
+                'PR ref list missing')
+    elif kind == 'threads':
+        require(isinstance(value, list) and bool(value), 'review thread pages missing')
+        for index, page in enumerate(value):
+            connection = page['data']['repository']['pullRequest']['reviewThreads']
+            require(isinstance(connection['nodes'], list) and type(connection['pageInfo']['hasNextPage']) is bool
+                    and connection['pageInfo']['hasNextPage'] == (index < len(value) - 1), 'review thread pagination incomplete')
+            require(all(isinstance(n, dict) and isinstance(n.get('id'), str) and type(n.get('isResolved')) is bool
+                        and isinstance(n['comments']['nodes'], list) for n in connection['nodes']), 'review thread fields missing')
+    elif kind == 'checks':
+        require(isinstance(value, list) and bool(value), 'check pages missing')
+        for index, page in enumerate(value):
+            commits = page['data']['repository']['pullRequest']['commits']['nodes']
+            require(len(commits) == 1, 'PR head commit missing')
+            rollup = commits[0]['commit']['statusCheckRollup']
+            if rollup is None:
+                continue
+            connection = rollup['contexts']
+            require(isinstance(connection['nodes'], list) and type(connection['pageInfo']['hasNextPage']) is bool
+                    and connection['pageInfo']['hasNextPage'] == (index < len(value) - 1), 'check pagination incomplete')
     elif kind == 'object':
         require(isinstance(value, dict) and bool(value), 'required object missing')
     elif kind == 'array':
@@ -375,7 +412,7 @@ def main():
         except (AttributeError, ValueError):
             pass
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--kind', choices=('json','scalar','issue-number','head','state','diff','metadata','items','issues','issue-history','quota','projects','project','fields','status-field','permission','comments','approval','merge-state','body','dedupe','prs-open','prs-merged','issues-closed','issue','object','array'))
+    parser.add_argument('--kind', choices=('json','scalar','issue-number','head','state','diff','metadata','items','issues','issue-history','quota','projects','project','fields','status-field','permission','comments','approval','merge-state','body','dedupe','prs-open','prs-merged','issues-closed','issue','tickets','pr-view','refs','threads','checks','object','array'))
     parser.add_argument('--issue-history', help='complete paginated all-state issue history for owner/name')
     parser.add_argument('--meta')
     parser.add_argument('--check', action='store_true')

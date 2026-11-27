@@ -436,6 +436,13 @@ class TicketTests(AdoCase):
         self.assertEqual(len(self.js('ticket', 'list', '--state', 'all', '--limit', '1')), 1)
         self.assertEqual(set(open_list[0]), {'number', 'title', 'body', 'state', 'stateReason', 'labels', 'assignees', 'url'})
 
+    def test_list_filters_by_label_like_gh_does(self):
+        a = self.fake.add('User Story', 'qa one', '', 'source:qa; bug')
+        self.fake.add('User Story', 'other', '', 'bug')
+        self.assertEqual([t['number'] for t in self.js('ticket', 'list', '--label', 'source:qa')], [a])
+        self.assertEqual([t['number'] for t in self.js('ticket', 'list', '--label', 'BUG', '--label', 'source:qa')], [a])
+        self.assertEqual(self.js('ticket', 'list', '--label', 'nope'), [])
+
     def test_history_includes_every_state(self):
         done = self.fake.add('User Story', 'done one', 'old body')
         self.ok('ticket', 'close', str(done), '--reason', 'completed')

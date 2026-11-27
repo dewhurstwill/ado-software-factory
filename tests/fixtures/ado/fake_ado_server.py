@@ -208,6 +208,19 @@ class Handler(BaseHTTPRequestHandler):
         pulled = fake.pulls.route(req)
         if pulled:
             return pulled
+        if p == '/_apis/projects/Factory' and m == 'GET':
+            return 200, {}, {'id': 'proj-0001', 'name': 'Factory'}
+        if p == '/Factory/_apis/policy/evaluations' and m == 'GET':
+            # observed: `{count:0,value:[]}` on a repository with no policies; the artifact id carries the
+            # project id and the pull request id
+            found = re.fullmatch(r'vstfs:///CodeReview/CodeReviewId/proj-0001/(\d+)', q.get('artifactId', [''])[0])
+            if not found or int(found.group(1)) not in fake.pulls.prs:
+                return 400, {}, {'message': 'bad artifactId'}
+            rows = [{'evaluationId': 'e%d' % i, 'status': e['status'],
+                     'configuration': {'isBlocking': e['blocking'], 'type': {'displayName': e['type']},
+                                       'settings': {'displayName': e['name']} if e.get('name') else {}}}
+                    for i, e in enumerate(fake.pulls.policies)]
+            return 200, {}, {'count': len(rows), 'value': rows}
         mr = re.fullmatch(r'/Factory/_apis/git/repositories/Factory(/refs)?', p)
         if mr and m == 'GET':
             if not mr.group(1):

@@ -15,59 +15,39 @@ origin`; GitHub strips https://github.com/, git@github.com: and a trailing .git
 to give owner/name. Verbs add `--repo` to `gh` only for a repo given by --repo or
 the config (as the scripts always did); `repo` also falls back to origin.
 
-Verbs                                   stdout
-  provider                              provider name
-  repo [--explicit]                     resolved repo slug (--explicit: no origin fallback; may be empty)
-  check                                 nothing; exit 79 when the run is halted
-  halt <reason>                         nothing; records the halt, exit 79
-  pr head <N>                           "<headRefName> <40-hex sha>"
-  pr state <N>                          {state, headRefOid, mergeCommit}
-  pr metadata <N>                       {labels, files, additions, deletions, changedFiles, body}
-  pr diff <N> --meta <file>             unified diff, validated against the metadata file
-  pr body <N>                           {headRefOid, body}
-  pr set-body <N> --body-file <f>       nothing (write, never retried)
-  pr merge <N> --squash --delete-branch [--subject S] [--body-file F] --match-head <sha>
-                                        the provider's own merge output (write, never retried)
-  pr list --state open|merged --limit N
-                                        open: [{number,title,body,url,headRefName,files}]
-                                        merged: [{number,title,body,url}]
-  ticket view <N>                       {number, title, body}
-  ticket list --state closed --limit N  [{number,title,body,stateReason}]
-  ticket graph                          [issue node, ...] for every open issue (labels and
-                                        comments nested as {nodes: [...]})
-  board <verb> ...                      reserved for super-board-card.sh's verbs
-Human approval (super-board-approval.py; both providers):
-  pr approval <N>                       {state, headRefOid, closes: [tickets the PR really links]}
-  ticket comments <N>                   [[{id,body,user:{login,type},created_at,updated_at}]] (GitHub: the
-                                        issue/PR conversation; Azure DevOps adds `version`)
-  permission <login>                    {permission}: GitHub's collaborator permission; Azure DevOps
-                                        "approve" for a config `ado.approvers` entry, else "none" (no call)
-Azure DevOps only (super-board-forge-ado-pr.py), new verbs; the GitHub backend leaves them unimplemented (69):
-  pr create --base B --head H --title T --body-file F [--draft] [--label L]... [--closes <ticket>]...
-                                        URL, then the number on the last line
-  pr ready <N>                          publish a draft
-  pr comment <N> --body-file F          "<threadId>.<commentId>"
-  pr comments <N>                       [[{id,body,user,created_at,updated_at}]] (no system comments)
-  pr comment-edit <N> <threadId>.<commentId> --body-file F
-  pr links <N>                          {closes: [work item ids]}
-  pr refs --state open|merged --limit N [{number,headRefName,baseRefName,headRefOid}] in ONE call (merged: only
-                                        completed PRs with a recorded source head); cleanup hook and stop
-  pr merged --since ISO --limit N       [{number,title,url,mergedAt,author:{login,type}}] completed PRs closed since (collect prs)
-  pr threads <N>                        [{id,path,status,resolved,comments:[{author,body,createdAt}]}] (path/resolved: collect prs)
-On Azure DevOps the shared pr verbs behave as follows: metadata and diff come from local git (the service has
-no diff); set-body moves the history, then visual, block into an overflow thread past 4,000 characters and
-body puts it back (exit 65 if still too long); merge pins the head, completes, then POLLS (exit 6 head moved,
-5 conflicts, 7 branch policy, 65 other refusal, 69 outcome unknown). Never trust lastMergeCommit before status is completed. See providers.md.
-Azure DevOps tracker verbs (super-board-forge-ado.py; shapes in providers.md): board ids|items|
-status|item-id|move|ensure [--check]; ticket view|list|graph|history|create|edit|close|comment|
-comments|comment-edit|claim|release [--force]; whoami; quota [--throttle|--take-throttle]; repository
-({repository, defaultBranch, empty, base, baseExists}: a new Azure Repos repository has no base branch yet). Tags: `add` merges, `replace` sets;
-claims are per-holder tags `sb:claimed-<6hex>` verified after the add (see providers.md). The GitHub backend leaves these unimplemented (69),
-except `ticket comments` (above).
+Every verb answers in the same stdout shape, flags and exit codes on both providers; the full table (shapes,
+the `gh` commands each replaces, the few honest differences) is providers.md. Ids are opaque strings.
 
-Exit codes: 0 ok · 3 not found (card/column/pull request) · 4 already claimed · 64 usage, or a malformed read (the read helper's) · 66 config
-unreadable or unknown provider · 65 refused (board ensure) · 69 provider or verb unavailable · 79 required
-reads halted (the shared halt file). Other codes come from the write's own `gh`.
+  provider | repo [--explicit] | check | halt <reason> | whoami | quota | repository | permission <login>
+  ticket    view <N> | list [--state open|closed|all] [--label L]... [--limit N] | graph | history |
+            create --title T --body-file F [--label L]... [--column C] | edit <N> [--title] [--body-file]
+            [--add-label L]... [--remove-label L]... | close <N> --reason completed|not-planned |
+            comment <N> --body-file F | comments <N> | comment-edit <N> <ID> --body-file F |
+            claim <N> | release <N> [--force]
+  pr        view <N> | head <N> | state <N> | body <N> | set-body <N> --body-file F | metadata <N> |
+            diff <N> --meta F | list --state open|merged --limit N | refs --state open|merged --limit N |
+            merged --since ISO --limit N | links <N> | approval <N> | checks <N> |
+            create --base B --head H --title T --body-file F [--draft] [--label L]... [--closes <N>]... |
+            ready <N> | comment <N> --body-file F | comments <N> | comment-edit <N> <ID> --body-file F |
+            note <N> --file P [--line L [--end-line M]] [--side left|right] --body-file F [--head SHA] |
+            notes <N> --notes-file F [--head SHA] | note-edit <N> <ID> --body-file F | threads <N> |
+            thread-resolve <N> <thread id> | merge <N> --squash --delete-branch [--subject S]
+            [--body-file F] --match-head SHA
+  board     items | status <N> | item-id <N> | move <N> <Column> | ids | ensure [--check]
+            (GitHub: super-board-card.sh; `ensure` is Azure DevOps only, GitHub uses super-board-setup.py)
+
+Backends: GitHub = this file (the original verbs) plus super-board-forge-github.py (the lane verbs);
+Azure DevOps = super-board-forge-ado.py (tracker) and super-board-forge-ado-pr.py (pull requests). On Azure DevOps
+metadata and diff come from local git (the service has no diff); set-body moves the history, then visual, block
+into an overflow thread past 4,000 characters and body puts it back (exit 65 if still too long); merge pins the
+head, completes, then POLLS (exit 6 head moved, 5 conflicts, 7 branch policy, 65 other refusal, 69 outcome
+unknown). Never trust lastMergeCommit before status is completed. Claims: GitHub = the assignee, verified by a
+re-read; Azure DevOps = per-holder tags `sb:claimed-<6hex>`.
+
+Exit codes: 0 ok · 3 not found (card/column/pull request) · 4 already claimed · 5/7 merge conflicts / branch policy
+(Azure DevOps) · 6 head moved (merge, note) · 64 usage, or a malformed read (the read helper's) · 65 refused ·
+66 config unreadable, unknown provider or a missing key · 69 provider or verb unavailable, a write failed, or a
+create's follow-up failed · 79 required reads halted (the shared halt file). Other codes are the write's own `gh`.
 
 Reads go through super-board-github-read.py (retry, halt file, SB_GITHUB_READ_STRICT);
 writes run `gh` directly and are never retried.
@@ -93,6 +73,9 @@ _spec.loader.exec_module(forge_ado)
 _spec = importlib.util.spec_from_file_location('forge_ado_pr', HERE / 'super-board-forge-ado-pr.py')
 forge_ado_pr = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(forge_ado_pr)
+_spec = importlib.util.spec_from_file_location('forge_github', HERE / 'super-board-forge-github.py')
+forge_github = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(forge_github)
 
 EXIT_USAGE, EXIT_CONFIG, EXIT_UNAVAILABLE, EXIT_HALTED = 64, 66, 69, 79
 
@@ -188,6 +171,12 @@ class Backend:
     def pr_comments(self, argv): self.unavailable('pr comments')
     def pr_comment_edit(self, argv): self.unavailable('pr comment-edit')
     def pr_links(self, argv): self.unavailable('pr links')
+    def pr_view(self, argv): self.unavailable('pr view')
+    def pr_checks(self, argv): self.unavailable('pr checks')
+    def pr_note(self, argv): self.unavailable('pr note')
+    def pr_notes(self, argv): self.unavailable('pr notes')
+    def pr_note_edit(self, argv): self.unavailable('pr note-edit')
+    def pr_thread_resolve(self, argv): self.unavailable('pr thread-resolve')
     def ticket_view(self, argv): self.unavailable('ticket view')
     def ticket_list(self, argv): self.unavailable('ticket list')
     def ticket_graph(self, argv): self.unavailable('ticket graph')
@@ -213,7 +202,8 @@ class AzureDevOpsBackend(forge_ado_pr.AdoPrVerbs, forge_ado.AdoVerbs, Backend):
     name = 'azure-devops'
 
 
-class GitHubBackend(Backend):
+class GitHubBackend(forge_github.GhVerbs, Backend):
+    """Lane verbs (tickets, claims, PR comments/notes/checks, board, quota...) live in super-board-forge-github.py."""
     name = 'github'
 
     # ---- repo ------------------------------------------------------------
@@ -340,19 +330,6 @@ class GitHubBackend(Backend):
         self.emit(['pr', 'list', *self.repo_args(), '--state', a.state, '--limit', a.limit,
                    '--json', PR_LIST_FIELDS[a.state]], f'prs-{a.state}')
 
-    def ticket_view(self, argv):
-        p = parser('ticket view <N>'); p.add_argument('number', type=positive)
-        n = p.parse_args(argv).number
-        self.emit(['issue', 'view', n, *self.repo_args(), '--json', 'number,title,body'], 'issue')
-
-    def ticket_list(self, argv):
-        p = parser('ticket list --state closed --limit N')
-        p.add_argument('--state', required=True, choices=['closed'])
-        p.add_argument('--limit', required=True, type=positive)
-        a = p.parse_args(argv)
-        self.emit(['issue', 'list', *self.repo_args(), '--state', 'closed', '--limit', a.limit,
-                   '--json', 'number,title,body,stateReason'], 'issues-closed')
-
     def ticket_graph(self, argv):
         parser('ticket graph').parse_args(argv)
         repo = self.resolve_repo()
@@ -443,9 +420,6 @@ class GitHubBackend(Backend):
         value = json.loads(self.read(self.permission_argv(self.owner_name('permission'), login), 'permission'))
         print(json.dumps({'permission': value.get('permission')}))
 
-    def board(self, argv):
-        raise Unavailable('github provider: board verbs are served by super-board-card.sh')
-
 
 BACKENDS = {'github': GitHubBackend, 'azure-devops': AzureDevOpsBackend}
 
@@ -471,6 +445,12 @@ DISPATCH = {
     ('pr', 'comment-edit'): 'pr_comment_edit',
     ('pr', 'links'): 'pr_links',
     ('pr', 'approval'): 'pr_approval',
+    ('pr', 'view'): 'pr_view',
+    ('pr', 'checks'): 'pr_checks',
+    ('pr', 'note'): 'pr_note',
+    ('pr', 'notes'): 'pr_notes',
+    ('pr', 'note-edit'): 'pr_note_edit',
+    ('pr', 'thread-resolve'): 'pr_thread_resolve',
     ('permission',): 'permission_verb',
     ('ticket', 'view'): 'ticket_view',
     ('ticket', 'list'): 'ticket_list',
@@ -490,6 +470,7 @@ DISPATCH = {
 }
 forge_ado.bind(sys.modules[__name__])
 forge_ado_pr.bind(sys.modules[__name__], forge_ado)
+forge_github.bind(sys.modules[__name__])
 LABEL = {'name': 'github-read'}  # prefix of halt/read messages; the ADO backend says azure-devops
 
 

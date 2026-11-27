@@ -185,6 +185,20 @@ def v_workitems(value):
              'linked work items malformed')
 
 
+def v_evaluations(value):
+    ado.need(isinstance(value, dict) and isinstance(value.get('value'), list)
+             and all(isinstance(e, dict) for e in value['value']), 'policy evaluations malformed')
+
+
+def v_project(value):
+    ado.need(isinstance(value, dict) and isinstance(value.get('id'), str) and value['id'], 'project malformed')
+
+
+# policy evaluation status -> the neutral check status
+CHECK_STATUS = {'approved': 'pass', 'rejected': 'fail', 'broken': 'fail', 'queued': 'pending', 'running': 'pending',
+                'notapplicable': 'skipped'}
+
+
 def comment_text(comment):
     return comment.get('content') or ''
 
@@ -242,8 +256,10 @@ class AdoPrVerbs:
         status, parsed, text = self.write('PATCH', self.pr_api(n), body, what)
         return self.written(status, parsed, text, what)
 
-    def post_thread(self, n, content):
+    def post_thread(self, n, content, context=None):
         body = {'comments': [{'parentCommentId': 0, 'content': content, 'commentType': 1}], 'status': 1}
+        if context:
+            body['threadContext'] = context
         status, parsed, text = self.write('POST', self.pr_api(n, '/threads'), body, f'comment on pull request #{n}')
         made = self.written(status, parsed, text, f'comment on pull request #{n}')
         comments = made.get('comments') or []
@@ -299,16 +315,54 @@ class AdoPrVerbs:
         pr = self.get_pr(p.parse_args(argv).number)
         print(f'{branch_of(pr["sourceRefName"])} {self.head_of(pr)}')
 
+    @staticmethod
+    def merge_commit(pr):
+        if pr['status'] != 'completed':
+            return None
+        oid = (pr.get('lastMergeCommit') or {}).get('commitId')
+        if not (isinstance(oid, str) and SHA.fullmatch(oid)):
+            raise forge.ForgeError('pull request is completed but the service gave no merge commit', EXIT_FAILED)
+        return {'oid': oid}  # lastMergeCommit is only the merge commit once completed; before, it is a trial
+
     def pr_state(self, argv):
         p = forge.parser('pr state <N>'); p.add_argument('number', type=forge.positive)
         pr = self.get_pr(p.parse_args(argv).number)
-        merge = None
-        if pr['status'] == 'completed':
-            oid = (pr.get('lastMergeCommit') or {}).get('commitId')
-            if not (isinstance(oid, str) and SHA.fullmatch(oid)):
-                raise forge.ForgeError('pull request is completed but the service gave no merge commit', EXIT_FAILED)
-            merge = {'oid': oid}  # lastMergeCommit is only the merge commit once completed; before, it is a trial
-        print(json.dumps({'state': STATE_OF[pr['status']], 'headRefOid': self.head_of(pr), 'mergeCommit': merge}))
+        print(json.dumps({'state': STATE_OF[pr['status']], 'headRefOid': self.head_of(pr), 'mergeCommit': self.merge_commit(pr)}))
+
+    def pr_view(self, argv):
+        p = forge.parser('pr view <N>'); p.add_argument('number', type=forge.positive)
+        n = p.parse_args(argv).number
+        pr = self.get_pr(n)
+        print(json.dumps({'number': pr['pullRequestId'], 'title': pr.get('title') or '', 'url': self.pr_web(pr['pullRequestId']),
+                          'state': STATE_OF[pr['status']], 'isDraft': bool(pr.get('isDraft')),
+                          'headRefName': branch_of(pr['sourceRefName']), 'headRefOid': self.head_of(pr),
+                          'baseRefName': branch_of(pr['targetRefName']), 'mergeCommit': self.merge_commit(pr),
+                          'labels': self.pr_labels(n)}))
+
+    def project_id(self, pr):
+        found = ((pr.get('repository') or {}).get('project') or {}).get('id')
+        if isinstance(found, str) and found:
+            return found
+        return self.read('GET', f'{self.base}/_apis/projects/{ado.q(self.project)}?api-version={ado.API}',
+                         validate=v_project, what='project')['id']
+
+    def pr_checks(self, argv):
+        """`[{name, status: pending|pass|fail|skipped, required}]` from the PR's policy evaluations (build
+        validation, required reviewers, work item links...). `required` = the policy is blocking. No policies: `[]`."""
+        p = forge.parser('pr checks <N>'); p.add_argument('number', type=forge.positive)
+        n = p.parse_args(argv).number
+        pid = self.project_id(self.get_pr(n))
+        url = (f'{self.proj_api}/policy/evaluations?artifactId=vstfs:///CodeReview/CodeReviewId/{pid}/{n}'
+               '&api-version=7.1-preview.1')
+        out = []
+        for e in self.read('GET', url, validate=v_evaluations, fixed=False, what=f'policy evaluations of pull request #{n}')['value']:
+            config = e.get('configuration') or {}
+            kind = ((config.get('type') or {}).get('displayName')) or 'policy'
+            label = (config.get('settings') or {}).get('displayName')
+            out.append({'name': f'{kind}: {label}' if label else kind,
+                        'status': CHECK_STATUS.get(str(e.get('status') or '').lower(), 'pending'),
+                        'required': bool(config.get('isBlocking'))})
+        print(json.dumps(out))
 
     # ---- metadata and diff: local git ----------------------------------------------------------------
     def git(self, *args):
@@ -635,26 +689,43 @@ class AdoPrVerbs:
         out.sort(key=lambda row: row[0], reverse=True)
         print(json.dumps([row for _, row in out[:int(a.limit)]]))
 
+    @staticmethod
+    def anchor(context):
+        """(line, startLine, side) of a thread's anchor: the LAST line of the range, the first only when
+        the range spans lines, and `right` (the new file) or `left` (the old one). All None for no anchor."""
+        for key, side in (('rightFile', 'right'), ('leftFile', 'left')):
+            first, last = context.get(key + 'Start'), context.get(key + 'End')
+            if first or last:
+                end = (last or first).get('line')
+                begin = (first or last).get('line')
+                return end, begin if begin and begin != end else None, side
+        return None, None, None
+
     def pr_threads(self, argv):
         """`pr threads <N>`: every live thread with what the comment list drops, the file path and the
         resolved state: `[{id, path, status, resolved, comments:[{author:{login,type}, body, createdAt}]}]`.
         `path` is `threadContext.filePath` without the leading `/` (null for a conversation thread);
-        `resolved` is true for the statuses fixed, closed, wontFix and byDesign. System comments, deleted
-        ones and the overflow thread are left out, as in `pr comments`."""
+        `resolved` is true for the statuses fixed, closed, wontFix and byDesign. `line`/`startLine`/`side` are the
+        anchor (null for a conversation thread or a whole-file note); each comment carries its opaque `id`
+        (`<thread>.<comment>`, what `pr note-edit` takes). System comments, deleted ones and the overflow thread
+        are left out, as in `pr comments`."""
         p = forge.parser('pr threads <N>'); p.add_argument('number', type=forge.positive)
         out = []
         for thread in self.get_threads(p.parse_args(argv).number):
             first = next((c for c in thread['comments'] if not c.get('isDeleted')), None)
             if first is not None and not is_system(first) and comment_text(first).startswith(OVERFLOW_MARK):
                 continue
-            comments = [{'author': who(c.get('author')), 'body': comment_text(c), 'createdAt': c.get('publishedDate') or ''}
-                        for c in thread['comments'] if live(c)]
+            comments = [{'id': f'{thread["id"]}.{c["id"]}', 'author': who(c.get('author')), 'body': comment_text(c),
+                         'createdAt': c.get('publishedDate') or ''} for c in thread['comments'] if live(c)]
             if not comments:
                 continue
-            path = (thread.get('threadContext') or {}).get('filePath')
+            context = thread.get('threadContext') or {}
+            path = context.get('filePath')
             status = str(thread.get('status') if thread.get('status') is not None else 'unknown')
+            line, start, side = self.anchor(context)
             out.append({'id': thread['id'], 'path': path.lstrip('/') if isinstance(path, str) and path else None,
-                        'status': status, 'resolved': status.lower() in RESOLVED, 'comments': comments})
+                        'status': status, 'resolved': status.lower() in RESOLVED, 'line': line,
+                        'startLine': start, 'side': side, 'outdated': False, 'comments': comments})
         print(json.dumps(out))
 
     # ---- comments, links ---------------------------------------------------------------------------------------------------
@@ -715,6 +786,74 @@ class AdoPrVerbs:
     def pr_links(self, argv):
         p = forge.parser('pr links <N>'); p.add_argument('number', type=forge.positive)
         print(json.dumps({'closes': self.linked_work_items(p.parse_args(argv).number)}))
+
+    # ---- inline review notes ------------------------------------------------------------------------------------
+    @staticmethod
+    def note_context(spec):
+        """A file-anchored thread. `filePath` carries a leading `/`; a line note adds the start/end of its range
+        on the right (new) or left (old) side; a whole-file note has the path only."""
+        context = {'filePath': '/' + spec['file']}
+        if spec['line'] is not None:
+            key = 'rightFile' if spec['side'] == 'right' else 'leftFile'
+            context[key + 'Start'] = {'line': spec['line'], 'offset': 1}
+            context[key + 'End'] = {'line': spec['end_line'] or spec['line'], 'offset': 1}
+        return context
+
+    def post_note(self, n, spec):
+        thread, comment = self.post_thread(n, spec['body'], self.note_context(spec))
+        return f'{thread}.{comment}'
+
+    def check_head(self, n, wanted):
+        """Exit 6, nothing written, when the PR is no longer at the head the caller read."""
+        if wanted:
+            if not SHA.fullmatch(wanted):
+                raise forge.Usage('--head must be the full 40-hex head sha')
+            if self.head_of(self.get_pr(n)) != wanted:
+                raise forge.ForgeError(f'head moved: pull request #{n} is no longer at {wanted}; nothing was written',
+                                       EXIT_HEAD_MOVED)
+
+    def pr_note(self, argv):
+        p = forge.parser('pr note <N> --file <path> [--line N [--end-line M]] [--side left|right] --body-file F [--head <sha>]')
+        p.add_argument('number', type=forge.positive); p.add_argument('--file', required=True)
+        p.add_argument('--line', type=forge.positive); p.add_argument('--end-line', type=forge.positive)
+        p.add_argument('--side'); p.add_argument('--body-file', required=True); p.add_argument('--head')
+        a = p.parse_args(argv)
+        spec = forge.forge_github.note_spec({'file': a.file, 'line': int(a.line) if a.line else None,
+                                             'end_line': int(a.end_line) if a.end_line else None, 'side': a.side,
+                                             'body': Path(a.body_file).read_text(encoding='utf-8')})
+        self.check_head(a.number, a.head)
+        print(self.post_note(a.number, spec))
+
+    def pr_notes(self, argv):
+        p = forge.parser('pr notes <N> --notes-file F [--head <sha>]')
+        p.add_argument('number', type=forge.positive); p.add_argument('--notes-file', required=True); p.add_argument('--head')
+        a = p.parse_args(argv)
+        specs = forge.forge_github.load_notes(a.notes_file)
+        self.check_head(a.number, a.head)
+        done = []
+        for i, spec in enumerate(specs):
+            try:
+                done.append({'index': i, 'id': self.post_note(a.number, spec)})
+            except forge.ForgeError as error:
+                if done:
+                    print(f'notes {", ".join(str(d["index"]) for d in done)} were written before note {i} failed: '
+                          f'{json.dumps(done)}', file=sys.stderr)
+                raise error
+        print(json.dumps(done))
+
+    def pr_note_edit(self, argv):
+        self.pr_comment_edit(argv)
+
+    def pr_thread_resolve(self, argv):
+        p = forge.parser('pr thread-resolve <N> <thread id>')
+        p.add_argument('number', type=forge.positive); p.add_argument('thread', type=forge.positive)
+        a = p.parse_args(argv)
+        self.patch_pr_thread(a.number, a.thread, {'status': 'fixed'}, f'resolve thread {a.thread} of pull request #{a.number}')
+        print(f'resolved {a.thread}')
+
+    def patch_pr_thread(self, n, thread, body, what):
+        status, parsed, text = self.write('PATCH', self.pr_api(n, f'/threads/{thread}'), body, what)
+        return self.written(status, parsed, text, what)
 
     def approval_snapshot(self, n):
         """{state, headRefOid, closes}: the PR, then the service's own work item links (no text parsing,

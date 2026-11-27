@@ -191,7 +191,8 @@
     // or keyword (case-insensitive, searched in the diff's ADDED lines only) of
     // a category exits the gate 7: no merge, card → Blocked 🙋 (the human merges
     // it, or comments "done" to approve and the next wave merges).
-    // Setting this key replaces the whole default set; {} turns it off.
+    // Setting this key replaces the whole default set; {} turns it off. One category
+    // is not part of that set: "board-config" (below) always applies.
     // Globs: `**/` = any dirs (incl. none), `**` = anything, `*` = one segment.
     "always_human": {
       "money":  { "labels": ["money", "payments", "billing", "pricing"],
@@ -206,7 +207,17 @@
       // rule below. A live database is always human, whatever the change.
       "schema": { "labels": ["schema", "destructive"],
                   "paths": [],
-                  "keywords": ["drop table", "drop column", "truncate table", "rename column", "drop schema"] }
+                  "keywords": ["drop table", "drop column", "truncate table", "rename column", "drop schema"] },
+      // ALWAYS ON, on both providers, even when this key is customised or `{}`: any PR that
+      // touches the board's own config folder (`.claude/super-board/configs/**`, or the same
+      // path under `.agents/`) waits for a human (gate exit 7). Why: that file holds this very
+      // merge policy and, on Azure DevOps, `ado.approvers` (who may release a held merge), so an
+      // agent's PR must not be able to loosen the policy or change who approves. Shown here
+      // for reference: you do not need to list it. Only a `board-config` key of your own
+      // replaces its rule (do that only to widen what counts as board config).
+      "board-config": { "labels": [],
+                        "paths": ["**/.claude/super-board/configs/**", "**/.agents/super-board/configs/**"],
+                        "keywords": [] }
     },
     // true only when the user explicitly chose auto-merge onto a
     // production-detected base in onboard. run.md's production-merge guard
