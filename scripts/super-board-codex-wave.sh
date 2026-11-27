@@ -70,7 +70,7 @@ if subprocess.run([sys.executable, str(readiness), '--config', str(config_path)]
                                        column=c['status'], detail='verification-readiness: repair verify_commands and restart explicitly',
                                        prUrl=None, priorFindings=None, lanesRun='none:halted') for c in cards], 'halted': True})
     if output_path:
-        output_path.write_text(result + '\n')
+        compat.write_text(output_path, result + '\n')
     print(result)
     sys.exit(9)
 os.chdir(root)
@@ -93,7 +93,7 @@ if code:
     result = json.dumps(dict(cards=[dict(number=c['number'], finalStatus='halted', lastLane='none', column=c['status'],
                                        detail=detail, prUrl=None, priorFindings=None, lanesRun='none:halted') for c in cards], halted=True))
     if output_path:
-        output_path.write_text(result + '\n')
+        compat.write_text(output_path, result + '\n')
     print(result)
     sys.exit(code)
 readiness_halted = threading.Event()
@@ -207,7 +207,7 @@ def run_card(card):
                                             '--tier', args.tier] + (['--complexity', complexity] if complexity else [])),
                                            stdout=subprocess.PIPE, text=True, **compat.group_kwargs())
                 active.add(process)
-                lock.write_text(f'PID={process.pid}\nLANE={lane}\nSTARTED={time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}\n')
+                compat.write_text(lock, f'PID={process.pid}\nLANE={lane}\nSTARTED={time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}\n')
             except OSError as error:
                 if process is not None:
                     compat.kill_group(process, hard=True)
@@ -265,7 +265,7 @@ try:
     if output_path:
         output = output_path
         temporary = output.with_name(output.name + f'.{owner}.tmp')
-        temporary.write_text(result + '\n')
+        compat.write_text(temporary, result + '\n')
         temporary.replace(output)
     print(result)
 finally:

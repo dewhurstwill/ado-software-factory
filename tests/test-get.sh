@@ -115,12 +115,21 @@ T="$WORK/t9"; mkdir -p "$T"
 # /usr/bin can contain node on Linux. Keep only the tools this install uses.
 NOBIN="$WORK/bin-nonode"; mkdir -p "$NOBIN"
 # type -P: the file, never a shell function (on Windows python3/jq are compat shims).
-for t in bash id curl tar gzip python3 mktemp mkdir rm dirname tr cp ln chmod grep basename sed gh jq ${SB_WINDOWS:+cygpath}; do
-  p=$(type -P "$t" || true)
-  [ "$t" != python3 ] || p=${SB_PYTHON:-$p}
-  ln -s "$p" "$NOBIN/$t"
-done
-out=$(PATH="$NOBIN" bash "$GET" --target "$T" 2>&1) || fail "install without node failed: $out"
+if [ -z "${SB_WINDOWS:-}" ]; then
+  for t in bash id curl tar gzip python3 mktemp mkdir rm dirname tr cp ln chmod grep basename sed gh jq; do
+    ln -s "$(type -P "$t")" "$NOBIN/$t"
+  done
+  NOPATH="$NOBIN"
+else
+  # Windows: an MSYS program finds msys-2.0.dll beside its real path only, so keep
+  # Git's /usr/bin (no node there) and wrap the native tools this install needs.
+  for t in curl python3 gh jq; do
+    p=$(type -P "$t" || true); [ "$t" != python3 ] || p=${SB_PYTHON:-$p}
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$p" > "$NOBIN/$t"; chmod +x "$NOBIN/$t"
+  done
+  NOPATH="$NOBIN:/usr/bin"
+fi
+out=$(PATH="$NOPATH" bash "$GET" --target "$T" 2>&1) || fail "install without node failed: $out"
 printf '%s\n' "$out" | grep -q '✗ node' || fail "missing node should be marked ✗: $out"
 printf '%s\n' "$out" | grep -q '^🧠 helper skills: skipped — 🔍 Checks will fix this$' || fail "helper line should defer to Checks: $out"
 printf '%s\n' "$out" | grep -q '^🔒 security-audit: skipped — 🔍 Checks will fix this$' || fail "security-audit line should defer to Checks: $out"

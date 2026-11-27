@@ -109,4 +109,18 @@ try:
 except c.ToolMissing as e:
     assert isinstance(e, FileNotFoundError) and 'nothing' in str(e)
 PY
+# 4 — every argument reaches a bash started from Python exactly as given (on Windows
+#     this is the MSYS command-line quoting in command_line()), and an MSYS tool too.
+python3 - "$PYC" <<'PY' || fail 'arguments must reach bash and printf unchanged from Python'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('c', sys.argv[1]); c = importlib.util.module_from_spec(spec); spec.loader.exec_module(c)
+args = ['{"items":[{"id":1,"title":"boom"}]}', 'C:\\x\\y z\\', 'a b', '*', '{a,b}', "it's", '$HOME', '']
+r = c.run(['bash', '-c', 'for a; do printf "<%s>\\n" "$a"; done', 'sh', *args], capture_output=True, text=True)
+got, want = r.stdout.splitlines(), ['<%s>' % a for a in args]
+if got != want:
+    sys.exit('bash got %r, want %r (command line %r)' % (got, want, c.command_line(c.argv_for(['bash', 'x']))))
+r = c.run(['printf', '%s', args[0]], capture_output=True, text=True)
+if r.stdout != args[0]:
+    sys.exit('printf got %r, want %r' % (r.stdout, args[0]))
+PY
 echo 'PASS: test-compat.sh (pass-through off Windows; jq/python3 shims; tool resolution)'

@@ -190,6 +190,13 @@ def popen(argv, **kwargs) -> subprocess.Popen:
     return subprocess.Popen(command_line(argv_for(argv)), **kwargs)
 
 
+def write_text(path, text: str) -> None:
+    """Path.write_text with UTF-8 and \\n line ends on every OS (bash reads these files:
+    a lock file sourced by bash with \\r\\n would give PID=123\\r)."""
+    with open(path, 'w', encoding='utf-8', newline='\n') as stream:
+        stream.write(text)
+
+
 def group_kwargs() -> dict:
     """Popen kwargs that start a child as the head of its own process group."""
     if WINDOWS:

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Offline release checks. Keep test-* / test_* suites offline; paid evals live in evals/.
 # Run every suite even after a failure, then fail the whole gate if any suite failed.
-# Each suite gets SB_SUITE_TIMEOUT seconds (default 300); a suite still running then is
+# Each suite gets SB_SUITE_TIMEOUT seconds (default 300, 900 on Windows); a suite still running then is
 # killed with its child processes and counted as failed (exit 124), and the run goes on.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -16,7 +16,8 @@ for tool in bash python3 git jq node curl tar; do
   command -v "$tool" >/dev/null || { echo "Missing test dependency: $tool" >&2; exit 1; }
 done
 
-SUITE_LIMIT="${SB_SUITE_TIMEOUT:-300}"
+# Windows process start-up is slow: the longest suites take minutes there, not seconds.
+if [ -n "${SB_WINDOWS:-}" ]; then SUITE_LIMIT="${SB_SUITE_TIMEOUT:-900}"; else SUITE_LIMIT="${SB_SUITE_TIMEOUT:-300}"; fi
 case "$SUITE_LIMIT" in ''|*[!0-9]*) echo "SB_SUITE_TIMEOUT must be whole seconds" >&2; exit 64 ;; esac
 
 # Stop a suite and everything it started. Suites run in their own process group

@@ -36,7 +36,9 @@ if os.name == 'nt':
                     os.path.isfile(first) and os.path.splitext(first)[1].lower() not in ('.exe', '.com', '.bat', '.cmd')):
                 found = _compat.resolve(first)
                 if found:
-                    args = _compat.command_line([*found, *args[1:]])
+                    args = [*found, *args[1:]]
+            # 4. Any MSYS program (Git Bash by its full path too) gets every word quoted.
+            args = _compat.command_line([str(a) for a in args])
         _popen_init(self, args, *rest, **kwargs)
 
     subprocess.Popen.__init__ = _git_bash_init

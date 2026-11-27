@@ -109,7 +109,9 @@ pp allow 'git push --force-with-lease origin feat'      "force push to feature b
 pp allow 'git push'                                     "bare push on a feature branch"
 pp allow 'git push origin --tags'                       "tags only"
 pp allow 'echo "git push --force origin main"'          "quoted text is not a command"
-OUT=$(printf '%s' "$(bash_cmd 'git push --force origin main' "$REPO")" | SB_ALLOW_PROTECTED_PUSH=1 CLAUDE_PROJECT_DIR="$REPO" python3 "$H/guard-protected-push.py")
+# A here-string, not a pipe: the guard exits before reading stdin, and a writer racing
+# that exit gets SIGPIPE under pipefail (seen on Windows).
+OUT=$(SB_ALLOW_PROTECTED_PUSH=1 CLAUDE_PROJECT_DIR="$REPO" python3 "$H/guard-protected-push.py" <<<"$(bash_cmd 'git push --force origin main' "$REPO")")
 [ -z "$OUT" ] || fail "SB_ALLOW_PROTECTED_PUSH=1 should turn the guard off"; PASS=$((PASS + 1))
 rm -rf "$REPO"
 

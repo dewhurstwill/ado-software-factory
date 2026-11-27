@@ -116,15 +116,19 @@ echo "🔧 installing"
 # A destination inside its source would instead recursively copy into itself.
 python3 - "$REPO_ROOT" "$TARGET" "$HOSTS" $PRIMARY_SKILLS $SECONDARY_SKILLS <<'PY'
 from pathlib import Path
+import os
 import sys
 
-root = Path(sys.argv[1]).resolve()
+# os.path.realpath, not Path.resolve: on Windows, Python 3.9's resolve() raises
+# "Access is denied" on a chain of directory symlinks.
+real = lambda p: Path(os.path.realpath(p))
+root = real(sys.argv[1])
 target = Path(sys.argv[2])
 folders = [".agents"] + ["." + h for h in sys.argv[3].split()]
 for skill in sys.argv[4:]:
-    src = (root / "skills" / skill).resolve()
+    src = real(root / "skills" / skill)
     for folder in folders:
-        dest = (target / folder / "skills" / skill).resolve()
+        dest = real(target / folder / "skills" / skill)
         if src == dest:
             continue
         if dest == root or dest in root.parents or dest in src.parents or src in dest.parents:

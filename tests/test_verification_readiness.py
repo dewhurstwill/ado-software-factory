@@ -77,7 +77,7 @@ class VerificationReadiness(unittest.TestCase):
             result = subprocess.run(command, capture_output=True, text=True)
             report = json.loads(result.stdout)
             self.assertFalse(report["green"])
-            self.assertIn("verify_commands", report["verification"][str(cfg.relative_to(root))])
+            self.assertIn("verify_commands", report["verification"][cfg.relative_to(root).as_posix()])
             text = subprocess.run(command + ["--text"], capture_output=True, text=True)
             self.assertIn("verification-readiness", text.stdout)
             self.assertEqual(json.loads(cfg.read_text())["verify_commands"], [" "])
