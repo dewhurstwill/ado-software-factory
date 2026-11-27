@@ -8,6 +8,16 @@ workers. Lane lifecycles, branch/PR model, comment cadence, Block
 templates, halt gates, and done conditions are all inherited from `run.md`
 unchanged.
 
+**Providers.** Tickets, the board, PRs and merges go through one command on GitHub and Azure DevOps
+alike: `python3 .claude/bin/super-board-forge.py --config <config-path> <verb>` (written `forge <verb>`
+below; always type the full command). [providers.md](providers.md) lists every verb, its output and exit
+codes. Nouns: **ticket** = GitHub issue / Azure DevOps work item; **label** = label / work item tag;
+**claim** = assignee / claim tag (`forge ticket claim`, `forge ticket release`); **board** = the GitHub
+Project (`project.owner` + `project.number`) / the team's Azure DevOps board (`ado.organization`,
+`ado.project`, `ado.team`, `ado.board`). Where this file says issue, it means the ticket. Scripts without
+`--config` (`super-board-gh-guard.sh`, `super-board-preflight.sh`) read the provider from `SB_CONFIG`; set it
+in the same Bash call.
+
 ## Codex runs
 
 `/super-board run --codex` uses headless Codex for every lane of every wave,
@@ -42,29 +52,32 @@ merge gate with `--expect-head <reviewed-SHA>` and verify landing per `run.md`.
 Concurrent reviews share that gate's merge mutex. Network and repo/git-dir writes
 use the lane launcher's sandbox settings, including an external submodule git dir.
 
-## Required GitHub evidence and a paused run
+## Required evidence and a paused run
 
-Required reads use `.claude/bin/super-board-github-read.py --kind <shape> -- <gh args>`.
+Required reads are forge reads (`READ_SHAPES` in `workflows/super-board-wave.js` lists the ones lanes
+use); on GitHub the forge runs them through `.claude/bin/super-board-github-read.py`, on Azure DevOps
+through the same retry in its transport.
 Three total attempts means the first attempt plus two retries of that same read;
-unrelated successful calls do not reset its failures. Invalid GraphQL queries,
+unrelated successful calls do not reset its failures. Invalid queries,
 authentication, and permission errors stop immediately. Do not retry mutations.
-A payload that misses an agent-facing `--kind` shape (`READ_SHAPES` in
-`workflows/super-board-wave.js`) exits 64 for that call only, printing the valid
+A payload that misses its read shape exits 64 for that call only, printing the valid
 form; it never halts the run. Fixed-command scripts set `SB_GITHUB_READ_STRICT=1`.
 
-Exit **79**, a workflow result with `halted: true`, or a failed `--check` ends this
-run. Check the helper's `--check` before claims, board/comment writes, each new
-lane/wave, and all migration/merge steps. The marker is shared through the main
+Exit **79**, a workflow result with `halted: true`, or a failed `forge check` ends this
+run. Run `forge check` before claims, board/comment writes, each new
+lane/wave, and all migration/merge steps. Only pass a ticket or PR number you read from the board or an
+earlier command: a missing number exits 3 on Azure DevOps but halts the run (79) on GitHub. The marker is shared through the main
 checkout's `.claude/super-board/github-halt.json`, including linked worktrees (a
 submodule keeps it in its own git dir: `<git-common-dir>/super-board/`).
 Cancel active workflow agents using local workflow controls (Codex: stop the background wave task); do not launch more
 lanes. Already-running agents stop at their next checkpoint; this is not an
 instantaneous process-wide kill. Preserve worktrees, claims, card statuses, and
 approval evidence. Do not move cards to Done/Blocked or release claims using an
-unavailable GitHub API. Report the local saved reason and what remains in flight.
+unavailable provider. Report the local saved reason and what remains in flight.
 
-After fixing access or the invalid query, explicitly resume with the helper's
-`--resume`. It rechecks the failed read before clearing the marker and archives
+After fixing access or the invalid query, explicitly resume with the read helper's
+`python3 .claude/bin/super-board-github-read.py --resume` (GitHub; an Azure DevOps halt records no
+replayable read, so `--resume` refuses it: recover it like an uncertain write, below). It rechecks the failed read before clearing the marker and archives
 the original reason. Failed recovery leaves the pause intact. When the caller's
 query was corrected or PR metadata changed, supply its current read explicitly:
 `--resume --kind <same-shape> [--meta <fresh-meta.json>] -- <corrected gh read args>`.
@@ -78,7 +91,7 @@ Do not schedule automatic retries of the stopped run.
 ## Orchestrator delegation contract (NON-NEGOTIABLE, adapted)
 
 The interactive session that runs this backend is the orchestrator. It:
-- polls the board, claims assignees, launches workflow waves, reconciles
+- polls the board, claims tickets, launches workflow waves, reconciles
   results, posts notifications, and reports to the user between waves;
 - does NOT do product work, patch lane skills mid-run, or hold per-card
   build context. Workflow lane agents or explicitly selected Codex workers do all product work.
@@ -120,10 +133,11 @@ Run the same preconditions as `run.md` §Preconditions, minus PID checks:
       `super-board-codex-lane.sh` process belongs to this repo. If a legacy run is detected,
       remove the lock just created and stop — the legacy run won.
 6. Crash-recovery sweep (the workflow backend's equivalent of the legacy
-   reaper): with no wave running, strip `bot_identity` from any
-   Review/QA/Ready/Building card that still carries it
-   (`gh issue edit <n> --remove-assignee <bot_identity>`). A crashed
-   orchestrator releases nothing — leaked assignees make the planner skip
+   reaper): with no wave running, release the claim on any
+   Review/QA/Ready/Building card that still carries one
+   (`forge ticket release <n> --force`; on GitHub this removes `bot_identity`, on Azure DevOps every
+   claim tag). A crashed
+   orchestrator releases nothing — leaked claims make the planner skip
    those cards forever and the board silently stops draining.
 7. Database reach: for every env in `migrations.allowed_envs` with a command, run its read-only
    `migrations.checks[env]` (e.g. `supabase migration list --db-url …`). A failure halts the run
@@ -135,13 +149,16 @@ Run the same preconditions as `run.md` §Preconditions, minus PID checks:
 
 Repeat until a done condition or halt gate fires:
 
-1. **Rate guard** — `sb_gh_guard_check 200` (super-board-gh-guard.sh; `gh api rate_limit` misreports GraphQL); if GraphQL remaining < 200, wait for
-   reset (same thresholds as run.md). A failing `gh` call outranks the reading:
+1. **Rate guard** — `sb_gh_guard_check 200` (super-board-gh-guard.sh, provider-aware; `SB_CONFIG` set
+   in the same call). GitHub: it reads GraphQL's own `rateLimit` (the REST rate-limit reading misreports
+   GraphQL); if GraphQL remaining < 200, wait for
+   reset (same thresholds as run.md). A failing provider call outranks the reading:
    right after a reset the REST reading has shown 4999 while calls still failed.
    With GraphQL dry, the orchestrator's own writes go over REST, a separate
-   quota: `gh api repos/<o>/<r>/issues/<n>/comments -f body=…` for a comment,
-   `gh api -X DELETE repos/<o>/<r>/issues/<n>/assignees -f 'assignees[]=<bot>'`
-   to release a claim. Board moves have no REST route; they wait for the reset.
+   quota: on GitHub `forge ticket comment <n> --body-file F` and `forge ticket release <n>`
+   are REST, so comments and claim releases still work. Board moves have no REST route; they wait
+   for the reset. Azure DevOps: no quota endpoint; the guard sleeps only on a saved low `remaining`
+   (providers.md → "Rate limits on Azure DevOps").
    **Usage guard** (Claude waves only; skip for `--codex`, explicit or host-switched) — `bash .claude/bin/super-board-usage.sh check --config <config-path>`
    (Claude 5-hour and weekly plan usage; threshold `usage_pause_pct`, default 95):
    - exit 0 → launch.
@@ -180,17 +197,16 @@ Repeat until a done condition or halt gate fires:
 2. **Plan the wave** —
    `bash .claude/bin/super-board-wave-plan.sh --config <config-path>` →
    Exit 9 is a verification-readiness halt: preserve work and claims, repair the
-   owning project's `verify_commands`, then restart explicitly. No GitHub recovery probe,
+   owning project's `verify_commands`, then restart explicitly. No evidence recovery probe,
    rebase, Build bounce, or automatic retry.
-   **Skill readiness before any wave writes.** Hydrate every selected issue body
-   read-only with `.claude/bin/super-board-github-read.py --kind issue -- issue
-   view <N> --json number,title,body`. Keep number, status, labels and literal body
+   **Skill readiness before any wave writes.** Hydrate every selected ticket body
+   read-only with `forge ticket view <N>` (`{number,title,body,…}`). Keep number, status, labels and literal body
    in a JSON array file. Run `python3 .claude/bin/super-board-skills-ready.py
    --root <repo-root> --host <claude|codex> --cards <cards.json>` for the actual
    worker host before sweep/resume/refresh/flag/stranded actions or Claim.
    Exit 10 names missing helpers: halt, preserve all state, repair the exact
    visible skill files and restart explicitly. Exit 64 means invalid input.
-   GitHub hydration failure follows the existing exit-79 read policy.
+   A hydration read failure follows the existing exit-79 read policy.
    Empty selection checks no unused helpers. Repeat with the new host before
    usage fallback; Claude availability never proves Codex availability.
    Pass hydrated bodies into the wave. Workers recheck their lane before writes
@@ -211,7 +227,7 @@ Repeat until a done condition or halt gate fires:
    `Ready` (below). Swept, resumed, approval-refresh and stranded cards are NOT in this pass's
    `cards`; they join the next wave.
 
-   **Stranded Building cards.** A card in Building with no assignee between
+   **Stranded Building cards.** A card in Building with no claim between
    waves has no live worker — a stopped or crashed wave left it mid-build. For
    each: find its branch (`git ls-remote --heads origin 'issue-<N>-*'`) and any
    leftover `.claude/worktrees/issue-<N>-build/`. If its HEAD is detached, keep it:
@@ -233,19 +249,19 @@ Repeat until a done condition or halt gate fires:
    frees them when the overlapping PR's issue closes.
    Wave width is every card the dependency graph says is free, in flight
    first (Review → QA → Ready), cut to `max_workers` when it is set (0 or
-   absent = no cap). `max_workers` is the GitHub-limit valve: step 5 lowers it
+   absent = no cap). `max_workers` is the rate-limit valve: step 5 lowers it
    after a wave that hit the hourly limit. If `cards` is empty and
    Building/QA/Review counts are 0 → done. If empty but cards sit in Blocked
    only → report and stop. This is unfinished work, not a completed-run calibration trigger.
-3. **Claim** — for each card, `gh issue edit <n> --add-assignee <bot_identity>`,
-   then VERIFY: re-read assignees (`gh issue view <n> --json assignees`) and
-   proceed only if the list is exactly `[<bot_identity>]`. Adding an assignee
-   does NOT fail when someone else already claimed (issues accept up to 10
-   assignees), so the add alone is not a mutex — on any other assignee set,
-   remove own assignee and skip the card (race lost). Skipped when
-   bot_identity is unset — accepted single-orchestrator risk: without it
-   there is no cross-session claim at all, so never run two orchestrators
-   (or /loop re-entries) against the same board without bot_identity.
+3. **Claim** — for each card, `forge ticket claim <n>`. The verb adds the claim,
+   then VERIFIES it by re-reading: on GitHub it proceeds only if the assignees are
+   exactly `[<bot_identity>]` (adding an assignee does NOT fail when someone else
+   already claimed: issues accept up to 10 assignees, so the add alone is not a
+   mutex); on Azure DevOps it checks the claim tags. Exit 4 = someone else holds it
+   or the race was lost: skip the card. `bot_identity` unset or `"auto"` claims as the
+   authenticated GitHub login. The verb accepts a card held only by its own identity, so
+   two orchestrators (or /loop re-entries) on the same GitHub identity, or the same
+   Azure DevOps checkout, are not separated by it: never run two against the same board.
 4. **Launch** — With `--codex`, or no Workflow tool, or the host check printing `codex`, use
    "Codex runs" above. The host check printing `claude` uses the Workflow tool; exit 65 or
    `opencode` never reaches Launch (see "Unknown host halts"). Workflow tool with
@@ -259,18 +275,18 @@ Repeat until a done condition or halt gate fires:
    otherwise (sonnet/opus/session — the default). A `model_tier` key in the
    config sets the default; an explicit flag wins over config.
 5. **Reconcile** (when the run completes) — read the returned `cards`
-   summary. If `halted: true`, any card is `halted`, or the GitHub helper's `--check`
+   summary. If `halted: true`, any card is `halted`, or `forge check`
    fails, preserve claims and stop. For verification-readiness (exit 9), repair
-   `verify_commands` and restart explicitly; do not invoke GitHub evidence recovery.
-   For a GitHub read halt, follow "Required GitHub evidence" above. Otherwise,
-   for EVERY card in the wave, release the assignee
-   (`gh issue edit <n> --remove-assignee <bot_identity>`, idempotent).
+   `verify_commands` and restart explicitly; do not invoke evidence recovery.
+   For a read halt, follow "Required evidence" above. Otherwise,
+   for EVERY card in the wave, release the claim
+   (`forge ticket release <n>`, idempotent).
    Append one line per card to the run manifest
    `docs/super-board/runs/<date>-<slug>.md`:
    `| #N | <lanesRun> | <finalStatus> | <column> | <detail> |`.
-   Then the GitHub-limit step-down: save the returned `cards` to a temp file and run
+   Then the rate-limit step-down: save the returned `cards` to a temp file and run
    `bash .claude/bin/super-board-throttle.sh --config <config-path> --results <file>`.
-   `hit: true` (GraphQL at 0, or a lane failed on the limit) has already written
+   `hit: true` (GitHub: GraphQL at 0; Azure DevOps: a 429 during the wave; or a lane failed on the limit) has already written
    `max_workers` one lower into the config — unlimited → 3 → 2 → 1, floor 1 — so the
    next wave and the next run start narrower. Raising it again is the owner's call.
 6. **Report** — one short block to the user per wave, in the session. Outcome
@@ -282,7 +298,7 @@ Repeat until a done condition or halt gate fires:
      ❌ #18 failed: build lane returned no result — retried next wave
    Next: wave 4 (3 cards)   |   ⏸ paused until 14:05   |   ✅ board drained
    ```
-   A throttle hit adds one line: `🐢 GitHub hourly limit hit — max_workers 3 → 2 (config saved)`.
+   A throttle hit adds one line: `🐢 GitHub hourly limit hit — max_workers 3 → 2 (config saved)` (Azure DevOps: `🐢 Azure DevOps throttled — max_workers 3 → 2 (config saved)`).
    Merged and bounced cards are counts, not lines — they need nobody. Every
    `human-gate`/`blocked` card gets its line and its owner: that is the
    human's queue. Never report a card as done that is not on the base branch.
@@ -309,10 +325,10 @@ reported as skipped and does not change the completed product work.
 
 ## Stop / resume
 
-- Stop: `x` on the run in `/workflows` (or TaskStop), then release assignees
+- Stop: `x` on the run in `/workflows` (or TaskStop), then release claims
   for in-flight cards and post "stopped mid-flight" comments (same protocol
   as `references/stop.md`). Remove `.claude/super-board/inflight/workflow-wave.lock`.
-- Codex stop: with GitHub available, run `bash .claude/bin/super-board-stop.sh <slug>`; it validates the wave PID and allows SIGTERM to cancel child lanes before releasing claims. Apply the same claim/comment/lock protocol to ALL selected claimed cards, including queued cards. During a GitHub halt, send SIGTERM only to the verified wave PID, wait for child cancellation, and preserve claims without GitHub writes.
+- Codex stop: with the provider available, run `bash .claude/bin/super-board-stop.sh <slug>`; it validates the wave PID and allows SIGTERM to cancel child lanes before releasing claims. Apply the same claim/comment/lock protocol to ALL selected claimed cards, including queued cards. During a read halt, send SIGTERM only to the verified wave PID, wait for child cancellation, and preserve claims without provider writes.
 - Resume: just run again — board state is the only state. A workflow stopped
   mid-wave can also be resumed in-session via `resumeFromRunId` (completed
   lane agents return cached results).
@@ -327,11 +343,8 @@ Lane agents inherit the session allowlist and run in acceptEdits. Add these
 to your project's `.claude/settings.json` → `permissions.allow` so waves
 don't stall on prompts:
 
-    "Bash(gh issue view:*)", "Bash(gh issue edit:*)", "Bash(gh issue comment:*)",
-    "Bash(gh pr view:*)", "Bash(gh pr diff:*)", "Bash(gh pr checks:*)", "Bash(gh pr comment:*)",
-    "Bash(gh pr create:*)", "Bash(gh pr ready:*)", "Bash(gh project item-edit:*)",
-    "Bash(gh project item-list:*)", "Bash(gh api:*)", "Bash(git worktree:*)",
-    "Bash(.claude/bin/super-board-card.sh:*)",
+    "Bash(python3 .claude/bin/super-board-forge.py:*)",
+    "Bash(.claude/bin/super-board-forge.py:*)", "Bash(git worktree:*)",
     "Bash(git checkout:*)", "Bash(git add:*)", "Bash(git commit:*)",
     "Bash(git push:*)", "Bash(git pull:*)", "Bash(git fetch:*)", "Bash(git blame:*)",
     "Bash(mkdir:*)", "Bash(pgrep:*)", "Bash(node --check:*)",
@@ -346,13 +359,18 @@ don't stall on prompts:
     "Bash(bash .claude/bin/super-board-codex-lane.sh:*)",
     "Bash(bash .claude/bin/super-board-codex-wave.sh:*)",
     "Bash(bash .claude/bin/super-board-host.sh:*)",
-    "Bash(bash .claude/bin/super-board-pr-body.sh:*)", "Bash(gh pr edit:*)",
+    "Bash(bash .claude/bin/super-board-pr-body.sh:*)",
     "Bash(bash .claude/bin/super-board-stop.sh:*)",
+    "Bash(.claude/bin/super-board-card.sh:*)",
     plus your project's test runners (e.g. "Bash(npm test:*)", "Bash(npx playwright:*)").
 
 `tests/test_run_allowlist.py` fails when pre-flight or a lane calls a `.claude/bin`
-script this list does not cover. The read helper is listed in both forms: scripts call
-`python3 .claude/bin/super-board-github-read.py`, lane prompts call it directly.
+script this list does not cover. The forge and the read helper are listed in both forms:
+instructions type `python3 .claude/bin/<script>.py`; a bare `.claude/bin/<script>.py` call
+also matches. The read helper stays for halt recovery (`--resume`) on GitHub; `super-board-card.sh`
+stays for a config-less legacy `/super-build` run on GitHub (super-build → "GitHub: no super-board
+config"). No `gh` rule is
+needed: lanes reach GitHub only through the forge and the bin scripts, which run `gh` themselves.
 
 **Headless runs (`claude -p "/super-board run"`).** Supported only where Claude Code may
 write the project's `.claude/` folder without a prompt. `.claude/` is a protected path:
@@ -371,9 +389,12 @@ Merging is NOT in the base list. On a board whose `merge_policy.default` is
 `"auto"`, `super-board onboard` offers the merge lines as a diff to approve
 up front (onboard → Permissions), so the first overnight run does not stall:
 
-    "Bash(bash .claude/bin/super-board-merge-gate.sh:*)", "Bash(gh pr merge:*)",
+    "Bash(bash .claude/bin/super-board-merge-gate.sh:*)",
     plus one line per configured migrate command in `migrations.commands`
     for the envs in `migrations.allowed_envs`.
+
+The gate runs the provider's merge itself (`forge pr merge`; on GitHub the forge calls `gh`
+inside the gate's process), so the gate line is the merge permission on both providers.
 
 Without them every Reviewer merge pauses for one interactive approval, so the
 backend is **attended-only**. With them, the gate still enforces
@@ -384,21 +405,21 @@ the policy. Pair auto-merge with a non-production `base_branch`.
 > **Read this before starting an overnight wave (issue #9).** The two settings
 > interact, and the failure is silent. A board configured
 > `"human_approves_merge": false` and `merge_policy.default: "auto"`, processing
-> otherwise ungated PRs **without** `"Bash(gh pr merge:*)"` allowed, will build,
+> otherwise ungated PRs **without** the merge-gate line allowed, will build,
 > test and review cards all night and land **nothing** —
 > each Reviewer stalls on an approval prompt nobody is there to click, and the
 > card returns to Review to be re-reviewed on the next wave.
 >
 > Pick one deliberately:
 >
-> | Intent | Configuration | Allowlist `gh pr merge` | Reviewer's terminal state |
+> | Intent | Configuration | Allowlist the merge gate | Reviewer's terminal state |
 > | --- | --- | --- | --- |
 > | Attended — approve each merge command | `human_approves_merge: false`, `merge_policy.default: "auto"` | no | pauses on a tool permission prompt |
 > | Unattended auto-merge | `human_approves_merge: false`, `merge_policy.default: "auto"` | **yes** | card → Done after confirmed merge; configured human gates → 🙋 Blocked |
 > | Every PR requires human approval through the gate | `human_approves_merge: false`, `merge_policy.default: "human"` | needed only if the agent will merge after approval | gate exits 7 → 🙋 Blocked until a human merges or approves the pinned request |
 > | Legacy human-only switch | `human_approves_merge: true` | no | Reviewer stops before the gate; card stays in Review |
 >
-> Gate-based rows also need the merge-gate command allowed. A tool permission prompt
+> A tool permission prompt
 > is separate from the gate's human-approval request; allowing a command does not
 > bypass `merge_policy`.
 >

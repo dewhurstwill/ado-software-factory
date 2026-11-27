@@ -76,7 +76,9 @@ Runs only when a commit group touches `supabase/` (migrations, schema, functions
 2. A new branch: `git push -u origin <branch>`.
 3. NEVER `--force` or `--force-with-lease`.
 4. The branch is the default or a protected branch (`main`, `master`, `production`, or the
-   repo's default from `gh repo view --json defaultBranchRef`): push only after the user says
+   repo's default: `defaultBranch` from `python3 .claude/bin/super-board-forge.py --config <cfg> repository`,
+   the same on GitHub and Azure DevOps — see `../super-board/references/providers.md`; `<cfg>` is
+   the active super-board config, and without one the forge assumes GitHub): push only after the user says
    yes in this conversation. Otherwise offer a branch and a PR instead.
 5. Push rejected as non-fast-forward: go back to Pull once. Rejected again: stop.
 

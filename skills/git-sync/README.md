@@ -18,4 +18,4 @@ Commits the working tree, pulls and pushes the current branch in one pass, then 
 
 ## Install
 
-Ships in the super-board pack as a secondary skill. `install.sh` copies `skills/git-sync/` to `.claude/skills/git-sync/`. Needs `git`; uses `gh` and the Supabase CLI when present.
+Ships in the super-board pack as a secondary skill. `install.sh` copies `skills/git-sync/` to `.claude/skills/git-sync/`. Needs `git`; uses the super-board forge (`super-board-forge.py`, GitHub or Azure DevOps) and the Supabase CLI when present.

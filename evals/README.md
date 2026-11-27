@@ -34,6 +34,18 @@ Offline regression tests for the same skill (no model, no cost) run in `tests/ru
 - `gh` — offline. Serves `<repo>/.git/gh-fixture/pr.json` (honours `--json` and `--jq`),
   `diff.patch` and, when a case writes one, `issue.json` for `gh issue view`, logs every call to `<repo>/.gh-log`, answers writes with "ok". `pr merge` is a
   logged no-op, so a grader can tell whether the agent tried.
+- Lanes run `python3 .claude/bin/super-board-forge.py --config <cfg> <verb>`, and the forge's
+  GitHub backend sends its own `gh` argv: REST `api repos/{owner}/{repo}/...` and GraphQL
+  (board, review threads, checks, approval links, ticket history). `_gh_fixture.py` beside the
+  stub answers those from the same fixtures: `pr view`/`pr list` get the head sha from the
+  branch and the file counts from `diff.patch`; posted comments and claims are kept in
+  `.git/gh-state.json` so a lane reads back what it wrote; REST writes are recorded like the
+  `gh issue` ones (tickets → `.git/gh-created.md`, comments and notes → `.git/gh-comments.md`,
+  PRs → `.git/gh-prs.md`). `tests/test_evals_forge_stub.py` drives every forge verb the skills
+  use against it offline.
+- `pack-seed.sh` — the review and QA cases' install: the pack's scripts in `.claude/bin` and a
+  minimal GitHub config (`.claude/super-board/configs/<name>.json`, `repo.remote`
+  `example/<name>`, `project` example/1), excluded from git. The prompts name the config.
 - `gh` list reads honour `--state`, `--label` and `--search`; the super-collect cases add
   `issues.json`, `prs-merged.json`, `project-items.json`, `fields.json` and `graphql.json`.
   Writes are recorded, never sent: `issue create` bodies go to `.git/gh-created.md`, comments
@@ -52,7 +64,7 @@ Offline regression tests for the same skill (no model, no cost) run in `tests/ru
 
 | Case | What it proves | Graders |
 |---|---|---|
-| `review-remembers` | On a re-review super-review loads the last `<!-- super-review:report -->` comment, marks R1 fixed and R2 not fixed with file:line, bounces, and skips the merge. | `loaded-prior` (Bash ran `gh pr view … comments`), `verdict` (LLM judge, weight 2), `no-merge` (`.gh-log` has no `pr merge`) |
+| `review-remembers` | On a re-review super-review loads the last `<!-- super-review:report -->` comment, marks R1 fixed and R2 not fixed with file:line, bounces, and skips the merge. | `loaded-prior` (Bash ran `forge pr comments` or a `gh` comments read), `verdict` (LLM judge, weight 2), `no-merge` (`.gh-log` has no `pr merge`) |
 | `ponytail-overengineering` | On a correct, tested PR that wraps a one-line formatter in a strategy class, registry, factory and JSON config, super-review reports an Over-engineering finding routed to Super Build and still calls the PR merge-ready. | `verdict` (LLM judge, weight 2), `reran-tests` (Bash ran the `Local tests:` command), `no-merge` |
 | `collect-sentry-verdicts` | super-collect `sentry --yes`: a live checkout crash (WEB-4411) is verified and filed in the ticket format; an avatar crash fixed by merged PR #377 (WEB-4490) is dropped `drop-fixed`. | `filed-4411`, `ticket-format` (Problem → Risk in `.git/gh-created.md`), `not-filed-4490`, `never-ready`, `verdict` (LLM judge, weight 2) |
 | `collect-duplicate` | super-collect `sentry --yes` when WEB-4411 is already open as #301 with the same fingerprint: a "Seen again" comment on #301, no new issue. | `commented`, `seen-again`, `no-new-issue`, `verdict` (LLM judge, weight 2) |

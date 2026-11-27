@@ -4,7 +4,9 @@
 
 ## What stop does — the one-line version
 
-Tears down an in-flight `super-board run` cleanly: posts a "stopped here" comment on every claimed issue + PR, releases the assignee mutex, kills workers + dispatcher, removes lock files. **Run = resume**, so the next `super-board run` picks up where stop left off.
+Tears down an in-flight `super-board run` cleanly: posts a "stopped here" comment on every claimed ticket + PR, releases the claim mutex, kills workers + dispatcher, removes lock files. **Run = resume**, so the next `super-board run` picks up where stop left off.
+
+The script works on GitHub and Azure DevOps alike through `python3 .claude/bin/super-board-forge.py --config <cfg> <verb>` (written `forge <verb>` below; nouns as in [run.md](run.md) → Providers).
 
 ## Intro shown when stop runs
 
@@ -24,7 +26,7 @@ Progress: ✅ onboard  →  ✅ run  →  🛑 stop (you are here)
 |---|---|
 | Active config exists (arg or `.claude/super-board/active`) | Exit 64: usage hint |
 | Config file readable | Exit 66: "config not found" |
-| `gh auth` valid | Continue anyway — comments may fail, kills still work |
+| Provider credentials valid (`gh auth` on GitHub, a token on Azure DevOps) | Continue anyway — comments may fail, kills still work |
 
 Nothing else. Stop is intentionally tolerant — its job is to bring the system to rest, not to enforce policy.
 
@@ -38,15 +40,17 @@ Nothing else. Stop is intentionally tolerant — its job is to bring the system 
 
 1. **Look up branch + PR**
    - `git branch -a --list "*issue-<N>-*"` → latest commit on the issue branch.
-   - `gh pr list --search "head:issue-<N>-*"` → PR number, if any.
-2. **Post the stop comment** on the issue AND (if it exists) the PR, in the comment format of
+   - `python3 .claude/bin/super-board-forge.py --config <cfg> pr refs --state open --limit 100`, the row whose
+     `headRefName` starts with `issue-<N>-` → PR number, if any. Never guess a PR number: a missing one halts
+     the run on GitHub (79).
+2. **Post the stop comment** on the ticket AND (if it exists) the PR, in the comment format of
    writing-standard.md § 4 — header `[orchestrator] [report] 🛑 stopped · <lane> lane`, then:
    - Did: worker PID and timestamp.
    - ✅ Done: last commit on the branch (a recovery point; inspect the preserved worktree for later edits).
    - ❌ Not done: interrupted work may be uncommitted.
    - Next: `super-board run <slug>`.
-3. **Release the assignee mutex** on the issue (`gh issue edit --remove-assignee <bot>`).
-4. **Remove descriptive labels** (`loop:in-build`, `loop:in-qa`, `loop:in-review`) — best-effort.
+3. **Release the claim** on the ticket (`forge ticket release <N>`; `--force` on Azure DevOps when a claim tag that is not ours is still there).
+4. **Remove descriptive labels** (`loop:in-build`, `loop:in-qa`, `loop:in-review`; `forge ticket edit <N> --remove-label …`) — best-effort.
 5. **SIGTERM the worker PID**, sleep 1s, SIGKILL if still alive.
 
 ## After the per-worker loop
@@ -60,9 +64,9 @@ Nothing else. Stop is intentionally tolerant — its job is to bring the system 
 
 - **Does not wait for workers to finish.** `claude -p` workers have no SIGTERM handler that flushes a partial commit. Worktree files remain, but unsaved in-memory work may be lost. Inspect uncommitted edits before resuming; restart recovery keeps dirty worktrees for inspection.
 - **Does not touch worktrees** under `.claude/worktrees/` or the legacy `.worktrees/` location. A legacy board worktree halts the next run until inspected/moved to the canonical folder; cleanup never force-removes it.
-- **Does not touch branches or PRs.** Both persist. State lives on the GitHub Project board — cards stay in whichever column they were in when stopped.
+- **Does not touch branches or PRs.** Both persist. State lives on the board — cards stay in whichever column they were in when stopped.
 - **Does not modify the config.** A stopped run is not a deactivated config; `.claude/super-board/active` is preserved.
-- **Does not bypass the GitHub assignee mutex.** It releases the mutex, then kills. If the GitHub API is unreachable, release is best-effort and the orphan-scan + reap-on-next-start covers the gap.
+- **Does not bypass the claim mutex.** It releases the mutex, then kills. If the provider is unreachable, release is best-effort and the orphan-scan + reap-on-next-start covers the gap.
 
 ## Resume = run (no separate verb)
 
@@ -70,14 +74,14 @@ There is **no `super-board resume` verb on purpose**. The board is the state:
 
 - Cards sit in whichever column they were in when stopped.
 - Branches + PRs persist.
-- The wrap-up comment on each in-flight issue documents what was in progress.
+- The wrap-up comment on each in-flight ticket documents what was in progress.
 - `super-board run <slug>` claims the same cards on its next tick and re-runs the lane from scratch (Builder re-implements, Tester re-runs tests, Reviewer re-reviews — there's no per-lane checkpoint inside a worker).
 
 Resume cost: **one lane cycle per previously-in-flight card** (Builder ~5min, Tester ~10min, Reviewer ~3min on a typical card), after any required recovery. Inspect and preserve local edits first; dirty or legacy worktrees need attention before automatic recovery continues.
 
 ## When to use stop
 
-- Need to step away and don't want workers consuming gh quota / Claude budget while idle.
+- Need to step away and don't want workers consuming provider quota / Claude budget while idle.
 - Discovered a bug in the dispatcher / a skill and need to fix it before more cards process.
 - About to make a destructive board edit (column rename, project re-permission) that would break in-flight workers.
 - Rate limits, billing alerts, or any cross-cutting "stop everything" signal.
@@ -102,8 +106,8 @@ Per the cardinal orchestrator/worker rule:
 
 | Symptom | Cause | Recovery |
 |---|---|---|
-| `gh issue comment` fails | gh auth expired or network blip | Comments are best-effort. The kill + lock cleanup still happens. Manually note the stop in the issue later if needed. |
-| Assignee release fails (gh 403) | rate limit or auth | The next `super-board run` startup runs `reap_finished_locks` which sweeps stale assignees idempotently. No manual action needed. |
+| The ticket comment fails | credentials expired or network blip | Comments are best-effort. The kill + lock cleanup still happens. Manually note the stop in the ticket later if needed. |
+| Claim release fails (403) | rate limit or auth | The next `super-board run` startup runs `reap_finished_locks` (workflow backend: the crash-recovery sweep) which sweeps stale claims idempotently. No manual action needed. |
 | Worker PID survives SIGKILL | extremely rare (kernel-level stuck process) | `ps aux \| grep claude -p` to confirm, then escalate via OS tools. |
 | Stop reports "nothing to stop" but `ps` shows live workers | dispatcher and workers were started by a different repo / different inflight dir | Run stop in the right repo OR `pkill -f 'super-board-run\.sh'` manually + `pkill -f 'claude -p .*super-board'`. |
 

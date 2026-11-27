@@ -7,7 +7,7 @@ prompt = sys.stdin.read()
 if 'Grade complexity' in prompt:
     with open(os.environ['SB_CODEX_TEST_LOG'], 'a') as log:
         fcntl.flock(log, fcntl.LOCK_EX)
-        log.write(json.dumps(dict(args=args, number=int(re.search(r'issue #(\d+)', prompt).group(1)), lane='grade', active=1)) + '\n')
+        log.write(json.dumps(dict(args=args, number=int(re.search(r'(?:issue|ticket) #(\d+)', prompt).group(1)), lane='grade', active=1)) + '\n')
     output = Path(args[args.index('--output-last-message') + 1])
     output.write_text(json.dumps(dict(complexity=os.environ.get('SB_CODEX_TEST_GRADE', 'medium'))))
     sys.exit(int(os.environ.get('SB_CODEX_TEST_GRADE_EXIT', '0')))

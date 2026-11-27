@@ -139,11 +139,11 @@ def grade(card):
         return card.get('complexity') if card.get('complexity') in ['low', 'medium', 'high'] else None, False
     if card.get('complexity') in ['low', 'medium', 'high']:
         return card['complexity'], False
-    prompt = (f"Read GitHub issue #{card['number']} (\"{card.get('title', '')}\") - body and all comments - with "
-              f".claude/bin/super-board-github-read.py --kind issue -- issue view {card['number']} --json number,title,body and "
-              f"--kind comments -- api repos/{{owner}}/{{repo}}/issues/{card['number']}/comments --paginate --slurp. "
+    prompt = (f"Read ticket #{card['number']} (\"{card.get('title', '')}\") - body and all comments - with "
+              f"python3 .claude/bin/super-board-forge.py --config {config_path} ticket view {card['number']} and "
+              f"python3 .claude/bin/super-board-forge.py --config {config_path} ticket comments {card['number']}. "
               'Grade complexity (low|medium|high) by the scope of change required. Read only: change no file, '
-              'label, comment or board state. Exit 79 from the read helper means stop and return nothing.\n')
+              'label, comment or board state. Exit 79 from the forge means stop and return nothing.\n')
     with tempfile.TemporaryDirectory(prefix='super-board-codex-grade-') as temporary:
         schema_path, output = Path(temporary) / 'schema.json', Path(temporary) / 'grade.json'
         schema_path.write_text(json.dumps(GRADE_SCHEMA))

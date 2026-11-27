@@ -6,8 +6,10 @@
 **Purpose:** clarify issues so a headless worker won't hallucinate. Every
 active-pipeline issue must have testable acceptance criteria.
 
-All clarifications are saved to GitHub via `gh issue edit` /
-`gh issue comment` — **no local file writes** during the per-issue loop.
+All clarifications are saved to the ticket via `forge ticket edit <N> --body-file F` /
+`forge ticket comment <N> --body-file F` — **no local file writes** during the per-issue loop.
+`forge` = `python3 .claude/bin/super-board-forge.py --config <cfg>`, the same on GitHub and Azure DevOps;
+a ticket is a GitHub issue or an Azure DevOps work item ([run.md](run.md) → Providers).
 The only local artifact this verb produces is
 `docs/super-board/pre-flight.md` in Phase 6.
 
@@ -38,14 +40,14 @@ PHASE 0 — Pick config
   ├─ 1 config → use it (1-liner confirm)
   └─ 2+ configs → list by description, ask which
 
-PHASE 1 — Confirm GitHub project
-  "🎯 Linting: <project title> (#<number>) under <owner>
+PHASE 1 — Confirm the board
+  "🎯 Linting: <board> (GitHub: <project title> #<number> under <owner> · Azure DevOps: <organization>/<project> board <ado.board>)
    Columns to scan: Ready, Building, QA, Review
    Labels: qa · bug · feature (a card with none is built; lint proposes one)
    Proceed? (y/n)"
 
 PHASE 2 — Read the project, then ask "do I understand it?"
-  ├─ Fetch all issues in active-pipeline columns
+  ├─ Fetch all issues in active-pipeline columns (`forge board items`, then `forge ticket view <N>`)
   ├─ Read PROJECT.md (if exists) + recent commits + repo README (if local)
   ├─ Sub-agent synthesizes a project summary (1-2 sentences)
   └─ Ask the user: "Anything I'm missing or got wrong?"
@@ -71,11 +73,11 @@ PHASE 7 — Final summary + session-reset nudge
 | State | Lint's response |
 |---|---|
 | 0 configs exist | Halt: "Run `super-board onboard` first." |
-| 1 config, project still on GitHub | Use it, 1-liner confirm |
+| 1 config, board still exists | Use it, 1-liner confirm |
 | 2+ configs | List by description, ask which |
 | Config exists but project deleted | Halt: "Project #N no longer exists. Run `super-board onboard` to recreate." |
 | Config exists, columns missing | Halt: "Columns missing: [X, Y]. Run `super-board onboard` to repair." |
-| User deleted config but project still on GitHub | Nothing to load; user runs `onboard` and picks "use existing project". |
+| User deleted config but board still exists | Nothing to load; user runs `onboard` and picks "use existing project". |
 
 ---
 
@@ -226,7 +228,7 @@ Sub-agent scans all linted issues + PROJECT.md to extract operational requiremen
    [ ] Stripe test secret key (issue #31)
 
 🛠  Tools the loop will need:
-   [✓] gh CLI authenticated (verified)
+   [✓] provider credentials (verified with `forge whoami`)
    [ ] Playwright Chromium → run: `npx playwright install chromium`
    [✓] Node 20+ (verified)
 
@@ -250,7 +252,7 @@ Saved to `docs/super-board/pre-flight.md`. Each `[ ]` is a halt gate for `super-
    • 1 moved to Blocked
    • 0 dropped (closed as not planned)
 
-💾 All changes saved to GitHub (no local commits needed).
+💾 All changes saved to the board (no local commits needed).
 🔄 Reset this session, then run `super-board run` to start the loop.
 ```
 
@@ -262,7 +264,7 @@ Saved to `docs/super-board/pre-flight.md`. Each `[ ]` is a halt gate for `super-
 - **Resumable** — Ctrl-C anywhere is safe; re-run lint to continue.
 - **Labels** — a card with no `qa` / `bug` / `feature` label gets one proposed with its AC fix (`qa` only when the ACs test what already exists and change nothing; it routes the card past Building). Applied on approve, like the AC edits.
 - **Walks active-pipeline columns only** — Ready + Building + QA + Review. Skips Backlog/Done/Blocked.
-- **No local file writes** during Phase 4 — all state lives on GitHub issues. Session-reset is safe.
+- **No local file writes** during Phase 4 — all state lives on the tickets. Session-reset is safe.
 
 ---
 

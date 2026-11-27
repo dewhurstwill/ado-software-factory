@@ -12,7 +12,8 @@ Every template in this pack points here. Change the format here first, then the 
   plain-words rules at the bottom.
 - ONE step per line. NEVER chain steps with arrows (`→`) in Problem, Context or Steps.
 - EMBED screenshots (`![desktop](https://github.com/<o>/<r>/raw/<sha>/<path>)`), pinned to a
-  commit sha. NEVER link to them, NEVER upload to a public image host.
+  commit sha. NEVER link to them, NEVER upload to a public image host. The URL is GitHub's
+  raw-file form; no Azure DevOps embed form is defined yet.
 - NEVER write a "Not verified" section or a "Next" section in a PR body. An unchecked AC
   with its one-line reason replaces both.
 - DON'T repeat a changed-file list in status comments. Explain each file in its own PR
@@ -107,7 +108,8 @@ Each block closes with `<!-- /sb:<name> -->`.
 > 🔴 Merged with a failing check: `e2e-mobile` · CI budget block; local suite green 42/42, truth 91/100
 ```
 
-**Status card** — a GitHub alert, one line:
+**Status card** — a GitHub alert, one line (GitHub alert syntax; no Azure DevOps form is defined yet, so
+write the same lines there):
 
 | State | Alert | Line |
 |---|---|---|
@@ -124,7 +126,7 @@ alert, one `> needs-you: <command>` line each; the merge gate reads it there or 
 > needs-you: `npm run db:migrate:live`
 ```
 
-**Problem** — lettered steps under Where. GitHub has no lettered-list syntax, so type the letter:
+**Problem** — lettered steps under Where. Markdown has no lettered-list syntax, so type the letter:
 
 ```
 ## Problem
@@ -327,7 +329,7 @@ These notes live on the pull request, never as comments inserted into source fil
 explain the author's work; they are not reviewer findings, approval, or proof a test passed.
 They use the three-label format instead of the lane-status format below. Do not copy the
 PR description into every note. See [PR author notes](pr-author-notes.md) for when to post,
-how to use GitHub's file and line comments, and how to refresh notes without duplicates.
+how to write file and line notes through the forge, and how to refresh notes without duplicates.
 
 ### Lane status and findings
 
@@ -370,7 +372,7 @@ label: `[builder] [blocker] uses new Date() — replace with clock.now()`. Owner
 `qa`, `reviewer`.
 
 **Reviewer report** — ONE comment per PR, edited in place every round (find it by the
-`<!-- super-review:report -->` marker, PATCH it; post a new one only on the first round).
+`<!-- super-review:report -->` marker, edit it in place with `super-board-forge.py pr comment-edit`; post a new one only on the first round).
 R-ids never change; a new finding takes the next free id.
 
 ```

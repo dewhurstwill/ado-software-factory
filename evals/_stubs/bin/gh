@@ -14,11 +14,19 @@
 # List reads honour --state, --label and --search (any search word of 5+ letters in title or
 # body). Writes are recorded, never sent: `issue create` appends its body to
 # .git/gh-created.md and answers a new issue URL; `issue comment` appends to .git/gh-comments.md.
+# Lanes now run super-board-forge.py, whose GitHub backend sends REST `api repos/...` calls and
+# GraphQL queries (board, threads, checks, approval links, ticket history): `_gh_fixture.py`
+# beside this stub answers those from the same fixtures, records REST writes the same way
+# (tickets -> gh-created.md, comments and notes -> gh-comments.md, PRs -> gh-prs.md) and keeps
+# what lanes read back (posted comments, assignees) in .git/gh-state.json. `pr view`/`pr list`
+# print pr.json with the fields the forge validates filled in (head sha from the branch, file
+# counts from diff.patch).
 set -uo pipefail
 ROOT="$PWD"
 while [ "$ROOT" != / ] && [ ! -d "$ROOT/.git" ]; do ROOT="$(dirname "$ROOT")"; done
 [ -d "$ROOT/.git" ] || ROOT="$PWD"
 FX="$ROOT/.git/gh-fixture"
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG="$ROOT/.gh-log"
 printf '%q ' gh "$@" >>"$LOG"; echo >>"$LOG"
 [ -d "$ROOT/.git" ] && printf '%s\n' "gh $*" >>"$ROOT/.git/gh-calls.log"
@@ -77,12 +85,12 @@ RATE='{"resources":{"core":{"limit":5000,"used":12,"remaining":4988,"reset":4102
 
 case "${1:-} ${2:-}" in
   "auth status"*) echo "Logged in to github.com (eval stub)" ;;
-  "pr view"*) emit "$(cat "$FX/pr.json")" ;;
+  "pr view"*) emit "$(python3 "$HERE/_gh_fixture.py" "$ROOT" pr-json)" ;;
   "pr list"*)
     if [ -f "$FX/prs-merged.json" ]; then
       case "$(echo "$state_arg" | tr '[:upper:]' '[:lower:]')" in ""|merged|all|closed) state_arg="" ;; *) state_arg="none" ;; esac
       emit_list "$(filtered "$FX/prs-merged.json")"
-    else emit "[$(cat "$FX/pr.json")]"; fi ;;
+    else emit_list "[$(python3 "$HERE/_gh_fixture.py" "$ROOT" pr-json)]"; fi ;;
   "pr diff"*) cat "$FX/diff.patch" ;;
   "pr checks"*) echo "no checks reported (eval stub)" ;;
   "pr merge"*) echo "merge recorded, not performed (eval stub)" ;;
@@ -109,12 +117,11 @@ case "${1:-} ${2:-}" in
   "project item-add"*) emit '{"id":"PVTI_eval_new"}' ;;
   "project item-edit"*|"label create"*) echo "ok (eval stub)" ;;
   "api rate_limit"*) emit "$RATE" ;;
-  "api graphql")
+  "api "*)
     case "$*" in
-      *rateLimit*) emit '{"data":{"rateLimit":{"limit":5000,"remaining":4988,"used":12,"resetAt":"2099-12-31T00:00:00Z"}}}' ;;
-      *) if [ -f "$FX/graphql.json" ]; then emit "$(cat "$FX/graphql.json")"; elif [ -n "$jq_arg" ]; then echo '{}' | jq -r "$jq_arg" 2>/dev/null; else echo '{}'; fi ;;
+      *"query{rateLimit"*|*"rateLimit{"*) emit '{"data":{"rateLimit":{"limit":5000,"remaining":4988,"used":12,"resetAt":"2099-12-31T00:00:00Z"}}}' ;;
+      *) python3 "$HERE/_gh_fixture.py" "$ROOT" "$@" ;;
     esac ;;
-  "api "*) if [ -n "$jq_arg" ]; then echo '{}' | jq -r "$jq_arg" 2>/dev/null; else echo '{}'; fi ;;
   *) echo "ok (eval stub)" ;;
 esac
 exit 0

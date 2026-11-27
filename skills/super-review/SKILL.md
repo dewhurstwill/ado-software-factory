@@ -14,6 +14,8 @@ on missing requirements and recheck each conditional helper before use.
 
 Super Review should be conservative with claims: only say **merge-ready** when review evidence is clean and verification has passed. If evidence is missing, say what is unverified.
 
+**Providers.** Tickets, the board, PRs and merges go through one command on GitHub and Azure DevOps alike: `python3 .claude/bin/super-board-forge.py --config <cfg> <verb>` (written `forge <verb>` below; always type the full command). [providers.md](../super-board/references/providers.md) lists every verb, its output and exit codes. Nouns: **ticket** = GitHub issue / Azure DevOps work item; **label** = label / work item tag; **claim** = assignee / claim tag (`forge ticket claim`, `forge ticket release`); **board** = the GitHub Project (`project.owner` + `project.number`) / the team's Azure DevOps board (`ado.organization`, `ado.project`, `ado.team`, `ado.board`).
+
 ## When to use
 
 Use this skill for:
@@ -26,7 +28,7 @@ Use this skill for:
 
 Do **not** use this as the primary implementation workflow. Route fixes to:
 
-- **Super Build** for feature/task implementation from GitHub Project `Ready` issues.
+- **Super Build** for feature/task implementation from `Ready` tickets on the board.
 - **Super QA** for functional bugs, broken behavior, failing Playwright paths, or missing QA coverage.
 - Visual fidelity, layout, screenshots, wireframes, or design-system drift: file a UI ticket; a human can run `/ui-refine-loop`. The board never triggers it.
 
@@ -35,7 +37,7 @@ Do **not** use this as the primary implementation workflow. Route fixes to:
 Accept any of these inputs:
 
 - current branch or local diff;
-- GitHub PR number or URL;
+- PR number or URL;
 - commit range;
 - user-provided file list;
 - QA report, screenshots, or super-board wave report;
@@ -195,12 +197,12 @@ bounce forever on a moving target.
 `prior_report` is the newest PR comment carrying it:
 
 ```bash
-gh pr view <PR> --json comments \
-  --jq '[.comments[] | select(.body | contains("<!-- super-review:report -->"))] | last | {url, body} // {}'
+python3 .claude/bin/super-board-forge.py --config <cfg> pr comments <PR> \
+  | jq '[.[][] | select(.body | contains("<!-- super-review:report -->"))] | last | {id, body} // {}'
 ```
 
-The number after `#issuecomment-` in `url` is the comment id. Write this round's report over it:
-`gh api -X PATCH repos/<owner>/<repo>/issues/comments/<id> -F body=@report.md`. One report per
+`id` is the comment id (an opaque string: hand it back unchanged). Write this round's report over it:
+`python3 .claude/bin/super-board-forge.py --config <cfg> pr comment-edit <PR> <id> --body-file report.md`. One report per
 PR, edited in place, so the table carries every round's status.
 
 Outside super-board (no PR), `prior_report` is whatever earlier review the caller hands you.
@@ -223,7 +225,7 @@ All clear → round 2 is the normal fresh pass. New findings take ids after the 
 - Calling a branch **fixed** or **merge-ready** before tests or evidence prove it.
 - Treating UI success or HTTP 200 as enough evidence for background jobs, uploads, or imports.
 - Mixing reviewer findings with broad refactors.
-- Creating duplicate GitHub issues without checking whether the finding is already tracked.
+- Creating duplicate tickets without checking whether the finding is already tracked.
 - Letting Super Review become another alias for Super Build; keep review authority separate from implementation authority.
 - Re-reviewing a bounced card from scratch and ignoring `prior_report` — that is how a finding gets "resolved" without a fix and slips through.
 
@@ -293,8 +295,8 @@ will not stack duplicates.
 When invoked by super-board (env `SUPER_BOARD_RUN=1` or invocation contains "super-board run"):
 
 ### State protocol
-- Read from issue + PR comments + PR review threads.
-- **GitHub budget** — every "move card" is `.claude/bin/super-board-card.sh --config <cfg> move <N> <Status>` (1 GraphQL point; `gh project item-list` / `field-list` cost ~100–200). Comments, labels and PR reads go over REST; [rate-limit-etiquette.md](../super-board/references/rate-limit-etiquette.md) → "Price list" has the calls.
+- Read from ticket + PR comments + PR review threads (`forge ticket view <N>`, `forge ticket comments <N>`, `forge pr comments <PR>`, `forge pr threads <PR>`).
+- **Budget** — every "move card" is `forge board move <N> <Status>` (on GitHub 1 GraphQL point; a full project item or field listing costs ~100–200). The forge already prefers the cheap read for each verb; [rate-limit-etiquette.md](../super-board/references/rate-limit-etiquette.md) → "Price list" has the GitHub costs and the Azure DevOps counterpart.
 - Respect handed-down worktree at `.claude/worktrees/issue-<N>-review/` and branch `issue-<N>-<slug>`.
 
 ### Two card types
@@ -308,7 +310,7 @@ See `.claude/skills/super-board/references/run.md` → Reviewer. Summary of the 
 2. **Gate 1 — thread scan.** Read threads and replies. [PR author notes](../super-board/references/pr-author-notes.md)
    alone are explanations, not findings or approval. Human questions or change requests
    in those threads still follow the normal review/blocking flow; the marker exempts no
-   replies. Never auto-resolve them or bypass GitHub's conversation-resolution requirements.
+   replies. Never auto-resolve them or bypass the provider's conversation-resolution requirements (GitHub branch protection, Azure DevOps comment-resolution policy).
    If ANY unresolved finding:
    - `[builder]` open → comment, move card Review → Ready.
    - `[qa]` open → comment, move card Review → QA.
@@ -342,16 +344,16 @@ See `.claude/skills/super-board/references/run.md` → Reviewer. Summary of the 
 
 ### Merge protocol — Done means merged
 
-Builder opens PRs as **drafts**, and GitHub never auto-merges a draft. Skipping the
-`gh pr ready` step is why a six-hour run landed zero commits on `main` while producing
+Builder opens PRs as **drafts**, and neither provider merges a draft (GitHub never auto-merges one; Azure DevOps refuses with 65). Skipping the
+`pr ready` step is why a six-hour run landed zero commits on `main` while producing
 two complete builds. In order, no shortcuts:
 
-1. `gh pr ready <PR>` — idempotent, safe on an already-ready PR.
+1. `forge pr ready <PR>` — idempotent, safe on an already-ready PR.
 2. Merge through the gate, pinned to the head you reviewed (`merge_policy.default: "human"`
    keeps a person on every merge — the gate returns exit 7 below):
-   record `gh pr view <PR> --json headRefOid` when review passes, then
+   record `forge pr view <PR> | jq -r .headRefOid` when review passes, then
    `super-board-merge-gate.sh --config <cfg> --pr <PR> --expect-head <sha> --subject "<PR title>"
-   --body-file <msg.md>` (it merges with `--match-head-commit`; the message is the PR title plus the
+   --body-file <msg.md>` (it merges with `forge pr merge --match-head`, pinned to that sha; the message is the PR title plus the
    commit bullets and `Closes #N` — writing-standard.md § 1). Exit 6 = the head moved after review → your evidence is void;
    leave the card in **Review** with a `[reviewer]` comment naming both shas.
    The gate owns the merge decision (config `merge_policy`, `migrations`):
@@ -375,15 +377,17 @@ two complete builds. In order, no shortcuts:
    - The rule in one line: the robot migrates the databases it was allowed to test its
      work; live databases, money, auth and destructive schema changes wait for a person.
 3. **Confirm the merge landed** — never trust the merge command's exit code:
-   **Exit 79 — required GitHub evidence unavailable:** stop the current run. Leave
+   **Exit 79 — required provider evidence unavailable:** stop the current run. Leave
    the card, approval, claims, and worktree intact. Report the local halt reason;
    do not classify missing data as safe, bounce it to Build, or post a new approval
-   request. Explicit recovery is in run-workflow.md → Required GitHub evidence.
+   request. Explicit recovery is in run-workflow.md → Required evidence (the same
+   halt on both providers). Only pass a ticket or PR number you read from the board or an
+   earlier command: a missing number exits 3 on Azure DevOps but halts the run (79) on GitHub.
 
-   `gh pr view <PR> --json state,mergeCommit` must report `MERGED` plus a commit sha,
+   `forge pr state <PR> | jq -r '.state + " " + (.mergeCommit.oid // "none")'` must report `MERGED` plus a commit sha,
    and that sha must be an ancestor of the base branch
    (`git merge-base --is-ancestor <sha> origin/<base>`).
-4. Only then: close the issue, move card Review → **Done**, post the ✅ comment citing
+4. Only then: close the ticket and move card Review → **Done** (`forge ticket close <N> --reason completed` does both; a failed move only warns, so then `forge board move <N> Done`), post the ✅ comment citing
    the merge commit sha.
 5. Merge refused (failing checks, conflicts, branch protection) → card Review →
    **Blocked** with the §4 Block template naming the blocker. Never leave it in Review;
@@ -426,7 +430,7 @@ builder's summary below, as claims to check, not as the frame.
 ACs: <paste>
 Diff: <merge-base diff or path to it>
 Builder's summary (claims): <paste>
-Budget: at most 50 gh calls; prefer local git. Over budget: confidence "insufficient_data".
+Budget: at most 50 provider calls (forge or gh); prefer local git. Over budget: confidence "insufficient_data".
 Class every finding: Gap / Bug / Verification miss / Scope drift / Over-engineering / No issue.
 Severity: Blocker / Should fix / Nit.
 Over-engineering is ALWAYS Should fix and NEVER Blocker on its own. It does not lower your

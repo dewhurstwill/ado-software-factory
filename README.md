@@ -76,7 +76,7 @@ Azure DevOps support is being added in this fork and is not complete:
 | Approving a held merge with a `done` comment | Works, checked live. Only sign-ins listed in `ado.approvers` count |
 | Status view, ticket filers (bug, refactor, collect), stop, cleanup hook, rate-limit guard | Works; status and bug filer checked live |
 | Onboarding checks (`super-board-setup.py`): token, board shape, empty repository | Works against the test server; not yet run live |
-| Skill instructions (what lane agents are told to run) and onboarding questions | Still written for GitHub |
+| Skill instructions (what lane agents are told to run) and onboarding questions | One provider-neutral set: every lane step is a forge verb (`tests/test_prose_provider_neutral.py` guards it); onboarding has an Azure DevOps path. Not yet run end to end by a live lane agent |
 
 To try it, install from this fork and add the block below to
 `.claude/super-board/configs/<slug>.json`:

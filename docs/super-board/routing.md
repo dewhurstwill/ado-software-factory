@@ -12,7 +12,7 @@ Pick the path by what you have. Every path ends in tickets. Then the number of t
 
 - `/grill-me` asks you hard questions until the idea is sharp.
 - `/wayfinder` settles the big decisions over many sessions. When the way is clear, it hands off to `/to-spec`.
-- `/super-collect` finds problems (Sentry, PostHog, issues, PRs, code shape), checks each one, and writes one findings doc.
+- `/super-collect` finds problems (Sentry, PostHog, open tickets, PRs, code shape), checks each one, and writes one findings doc.
 - `/to-spec` writes the spec.
 - `/to-tickets` cuts the spec into small tickets.
 

@@ -1,20 +1,22 @@
 ---
 name: pr-security-review
 description: Security review of one PR's diff against its base branch — high-confidence, exploitable vulnerabilities only (injection, auth bypass, crypto and secrets, code execution, data exposure), each false-positive-filtered by a parallel sub-task. The super-qa Tester lane runs it on every PR; each finding fails QA and goes back to Build. Use when the user says "pr security review", "/pr-security-review", or wants a security pass on a branch or PR diff. Not Claude Code's built-in /security-review; for a deep whole-repo audit use security-audit.
-allowed-tools: Bash(git diff:*), Bash(git status:*), Bash(git log:*), Bash(git show:*), Bash(git remote show:*), Bash(git fetch:*), Bash(gh pr view:*), Read, Glob, Grep, LS, Task
+allowed-tools: Bash(git diff:*), Bash(git status:*), Bash(git log:*), Bash(git show:*), Bash(git remote show:*), Bash(git fetch:*), Bash(python3 .claude/bin/super-board-forge.py:*), Bash(.claude/bin/super-board-forge.py:*), Read, Glob, Grep, LS, Task
 ---
 
 <!--
 Ported from anthropics/claude-code-security-review, .claude/commands/security-review.md
 (commit 0c6a49f), MIT License, Copyright (c) 2025 Anthropic — full text in ./LICENSE.
 Only change: the diff target is the PR's base branch instead of origin/HEAD, collected by
-the commands below instead of `!` shell injection. The prompt after them is verbatim.
+the commands below instead of `!` shell injection, and the base is read through the pack's
+provider-neutral forge (GitHub or Azure DevOps). The prompt after them is verbatim.
 -->
 
 You are a senior security engineer conducting a focused security review of the changes on this branch.
 
 Collect the review context first. `<base>` is the PR's base branch
-(`gh pr view <PR> --json baseRefName --jq .baseRefName`); with no PR, use the branch's
+(`python3 .claude/bin/super-board-forge.py --config <cfg> pr view <PR>`, its `baseRefName`;
+the same on GitHub and Azure DevOps, see `../super-board/references/providers.md`); with no PR, use the branch's
 upstream base, and only then `origin/HEAD`. Run `git fetch origin <base>` once, then:
 
 GIT STATUS:
