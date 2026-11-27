@@ -23,6 +23,8 @@
 #     [--fingerprint "<slug>|<tc>|<signature>"] \
 #     [--suggested-skill super-build|super-qa|ui-refine-loop|super-review] \
 #     [--check-body]      # run the body checks only, then exit (no gh calls)
+#     [--config <cfg.json>] [--column <name>]   # azure-devops only (the provider comes from the
+#                                               # config, else $SB_CONFIG); --column default Ready
 #       (ui-refine-loop only labels a UI ticket; a human can run /ui-refine-loop —
 #        the board never triggers it)
 #
@@ -32,6 +34,12 @@
 # Never falls back to the repo's primary project — column semantics differ.
 #
 # Column: "Bug", override with $SUPER_QA_TARGET_OPTION_NAME.
+#
+# Azure DevOps (config "provider": "azure-devops"): the SUPER_QA_* knobs above are GitHub-only. The
+# ticket goes through the forge (super-board-forge.py): its fingerprint and metadata are a VISIBLE
+# footer in the body (the service strips HTML comments on save), the dedupe is the same
+# whitespace-token match against `forge ticket history`, and a work item is on the board as soon as
+# it exists, so --column (default Ready, like the GitHub fallback) is the only placement step.
 # Body checks bypass: SUPER_QA_ALLOW_WEAK_BODY=1 (not during autonomous runs).
 #
 # Stdout: the issue number — new, or the existing one on a fingerprint hit.
@@ -41,6 +49,7 @@ set -uo pipefail
 
 TITLE=""; BODY_FILE=""; KIND="bug"; PRIORITY="medium"; CATEGORY=""
 AREA=""; ROUTE=""; SPEC=""; ITER=""; FINGERPRINT=""; SUGGESTED_SKILL=""; CHECK_ONLY=0
+CONFIG_ARG=""; COLUMN_ARG=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -56,6 +65,8 @@ while [ $# -gt 0 ]; do
     --fingerprint)     FINGERPRINT="$2"; shift 2 ;;
     --suggested-skill) SUGGESTED_SKILL="$2"; shift 2 ;;
     --check-body)      CHECK_ONLY=1; shift ;;
+    --config)          CONFIG_ARG="$2"; shift 2 ;;
+    --column)          COLUMN_ARG="$2"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
 done
@@ -142,6 +153,102 @@ fi
 if [ -z "$FINGERPRINT" ]; then
   FINGERPRINT="${KIND}|${ROUTE:-noroute}|${CATEGORY:-uncategorized}|$(echo "$TITLE" \
     | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-|-$//g')"
+fi
+
+# --- azure-devops ------------------------------------------------------------
+# The provider comes from --config, else $SB_CONFIG; no config means GitHub. Everything below the
+# `fi` that closes this block is the GitHub path, unchanged.
+SB_FORGE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/super-board-forge.py"
+CONFIG_JSON=""
+if [ -n "$CONFIG_ARG" ]; then
+  [ -r "$CONFIG_ARG" ] || die "--config missing or unreadable: $CONFIG_ARG" 66
+  CONFIG_JSON=$(cat "$CONFIG_ARG")
+elif [ -n "${SB_CONFIG:-}" ] && [ -r "${SB_CONFIG}" ]; then
+  CONFIG_JSON=$(cat "$SB_CONFIG")
+fi
+forge() { # the config is read once (it may be a FIFO): every call gets a fresh copy
+  if [ -n "$CONFIG_JSON" ]; then python3 "$SB_FORGE" --config <(printf '%s\n' "$CONFIG_JSON") "$@"
+  else python3 "$SB_FORGE" "$@"; fi
+}
+PROVIDER=github
+[ -z "$CONFIG_JSON" ] || PROVIDER=$(forge provider | tr -d '\r') || exit $?
+if [ "$PROVIDER" = azure-devops ]; then
+  forge check || exit $?
+  HISTORY=$(forge ticket history) || exit $?
+  # Same whitespace-token match as GitHub: `err|x|441` must not hit `err|x|4411`. The forge hands the
+  # body back decoded (the service stores & and " as entities), so the token is compared as written.
+  EXISTING=$(printf '%s' "$HISTORY" | jq -r --arg fingerprint "$FINGERPRINT" '[.[] | select(.state == "OPEN" and any(.body | splits("\\s+"); . == $fingerprint)) | .number] | first // empty' | tr -d '\r')
+  ADO_TMP=$(mktemp)
+  trap 'rm -f "$ADO_TMP" "$ADO_TMP.err"' EXIT
+  if [ -n "$EXISTING" ]; then
+    printf 'Seen again%s.\n\n%s\n' "${ITER:+ on iteration ${ITER}}" "$BODY_RAW" > "$ADO_TMP"
+    forge ticket comment "$EXISTING" --body-file "$ADO_TMP" >/dev/null 2>&1 \
+      || { forge halt "Comment outcome unknown for #${EXISTING}; inspect before retrying"; exit 79; }
+    echo "$EXISTING"
+    exit 0
+  fi
+  case "$KIND" in
+    bug) BADGE="🐛 [bug]" ;; ux) BADGE="💄 [ui]" ;; feature) BADGE="✨ [feat]" ;;
+    tests) BADGE="🧪 [test]" ;; docs) BADGE="📝 [docs]" ;; tech-debt) BADGE="♻️ [refactor]" ;;
+  esac
+  SCOPE="${AREA:-$(echo "${ROUTE:-}" | sed -E 's#^/+##; s#/+$##; s#[^A-Za-z0-9._-]+#-#g' | tr '[:upper:]' '[:lower:]')}"
+  SCOPE="${SCOPE:-app}"
+  {
+    echo "## Board summary"
+    echo "**${PRIORITY}** ${KIND}${CATEGORY:+ (${CATEGORY})}${ROUTE:+ on \`${ROUTE}\`}${AREA:+ — area \`${AREA}\`} · owner \`${SUGGESTED_SKILL:-unassigned}\`"
+    echo
+    echo "$BODY_RAW"
+    if ! echo "$BODY_RAW" | grep -qiE '^#{1,3}[[:space:]]+Blocked by[[:space:]]*$'; then
+      echo
+      echo "## Blocked by"
+      echo
+      echo "- None."
+      echo
+      echo "> Added by the filer. A QA finding reproduces against code that already ships, so"
+      echo "> nothing gates it. Stated rather than left silent — a missing section reads as"
+      echo "> unreadable to the wave planner, not as None."
+    fi
+    # Azure DevOps strips HTML comments from a work item on save, so the metadata is visible text.
+    # The fingerprint line is the dedupe key: it must stay one whitespace-delimited token.
+    echo
+    echo "---"
+    echo
+    echo "_Filed by Super QA. Keep the fingerprint line: a repeat sighting finds this ticket by it._"
+    echo
+    echo "- route: ${ROUTE:-none}"
+    echo "- spec: ${SPEC:-none}"
+    echo "- iteration: ${ITER:-none}"
+    echo "- area: ${AREA:-none}"
+    echo "- category: ${CATEGORY:-none}"
+    echo "- priority: ${PRIORITY}"
+    echo "- type: ${KIND}"
+    echo "- fingerprint: ${FINGERPRINT}"
+  } > "$ADO_TMP"
+  LABELS=("$KIND" "source:qa" "priority:${PRIORITY}")
+  if [ -n "$AREA" ]; then LABELS+=("area:${AREA}"); fi
+  if [ -n "$CATEGORY" ]; then LABELS+=("qa:${CATEGORY}"); fi
+  if [ -n "$SUGGESTED_SKILL" ]; then LABELS+=("skill:${SUGGESTED_SKILL}"); fi
+  LABEL_ARGS=()
+  for l in "${LABELS[@]}"; do LABEL_ARGS+=(--label "$l"); done
+  forge check || exit $?
+  CREATED=$(forge ticket create --title "${BADGE} ${SCOPE}: ${TITLE}" --body-file "$ADO_TMP" "${LABEL_ARGS[@]}" --column "${COLUMN_ARG:-Ready}" 2>"$ADO_TMP.err"); RC=$?
+  cat "$ADO_TMP.err" >&2; rm -f "$ADO_TMP.err"
+  ISSUE_N=$(printf '%s\n' "$CREATED" | tail -1 | tr -d '\r')
+  case "$ISSUE_N" in ''|*[!0-9]*) ISSUE_N="" ;; esac
+  if [ "$RC" -ne 0 ]; then
+    if [ -n "$ISSUE_N" ]; then
+      # The ticket exists but the forge could not place it: the number still goes to stdout.
+      echo "$ISSUE_N"
+      forge check || exit 79
+      echo "warn: #${ISSUE_N} filed but not moved to '${COLUMN_ARG:-Ready}' — manual move required" >&2
+      exit 71
+    fi
+    [ "$RC" -ne 3 ] || die "the board has no '${COLUMN_ARG:-Ready}' column (nothing was filed)" 70
+    forge halt "Ticket creation response failed; reconcile fingerprint ${FINGERPRINT} before retrying"; exit 79
+  fi
+  [ -n "$ISSUE_N" ] || { forge halt "Ticket creation returned no number; reconcile fingerprint ${FINGERPRINT} before retrying"; exit 79; }
+  echo "$ISSUE_N"
+  exit 0
 fi
 
 GITHUB_READ="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/super-board-github-read.py"

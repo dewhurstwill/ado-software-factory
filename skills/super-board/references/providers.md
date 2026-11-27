@@ -131,7 +131,7 @@ None: exit 69 naming the three options.
 | `ticket list [--state open\|closed\|all] [--limit N]` | array of the same | |
 | `ticket graph` | open tickets in the GitHub graph shape, each with its last 8 comments. One comments call per open ticket: the cost driver | |
 | `ticket history` | `[{number,state,body}]`, every state | |
-| `ticket create --title T --body-file F [--label L]... [--column C]` | URL, then the number (last line) | 3 unknown column |
+| `ticket create --title T --body-file F [--label L]... [--column C]` | URL, then the number (last line). When the ticket was created but the move into `--column` failed, URL and number are STILL printed (then a non-zero exit), so a filer can report "filed, not placed" | 3 unknown column (nothing created) |
 | `ticket edit <N> [--title] [--body-file] [--add-label L]... [--remove-label L]...` | | |
 | `ticket close <N> --reason completed\|not-planned` | `closed #N (reason)`; moves to Done; not-planned adds tag `not-planned` | |
 | `ticket comment <N> --body-file F` | comment id | |
@@ -142,6 +142,8 @@ None: exit 69 naming the three options.
 | `whoami` | `{login,id}` | |
 | `permission <login>` | `{permission}`: `"approve"` when `ado.approvers` lists the unique name (case-insensitive), else `"none"`. No call | 66 `ado.approvers` not a list of names |
 | `quota` | saved `ado-quota.json` plus `seen`; when the service sends only `X-RateLimit-Cost`, `cost` (last call) and `total_cost` (running) | |
+| `quota --throttle` / `--take-throttle` | `{throttled, throttled_at}`: the 429s the transport recorded (`ado-throttle.json`, beside `ado-quota.json`) since the last take. `--take-throttle` also resets the count, so a caller asking once per wave sees only that wave's | |
+| `repository` | `{repository, defaultBranch, empty, base, baseExists}`: `empty` = no branch at all (a NEW Azure Repos repository has none and a PR cannot be opened); `base` = config `base_branch`, `baseExists` whether that branch exists (null when unset). Used by the onboarding check | 79 the repository is not found or the read is rejected |
 | `check`, `halt <reason>`, `provider`, `repo` | as above | 79 when halted |
 
 The holder is a stable 6-hex id: first 6 hex of sha256 over hostname, login user and the main
@@ -220,6 +222,9 @@ and is not trusted for them. A failed labels read is a failed required read (hal
 | `pr comment-edit <N> <thread>.<comment> --body-file F` | the id | 64 bad id |
 | `pr links <N>` | `{closes:[<work item ids>]}` from the PR's linked work items | |
 | `pr approval <N>` | `{state, headRefOid, closes}`: `pr state`'s state and head, `pr links`' work items (never text parsing, whatever the target branch) | 3 not found |
+| `pr refs --state open\|merged --limit N` | `[{number, headRefName, baseRefName, headRefOid}]` in ONE list call (`pr list` also reads every open PR's changed files). `merged` rows are only `completed` PRs that carry a recorded source head (`lastMergeSourceCommit`), anything else is left out rather than guessed. Callers: the cleanup hook, stop. GitHub backend: 69 (those scripts keep their own `gh` calls there) | |
+| `pr merged --since ISO --limit N` | `[{number, title, url, mergedAt, author:{login,type}}]`: completed PRs with `closedDate` at or after `since`, newest first; `type` is `Bot` for a service identity (`[bot]`, `svc.` prefix, "Build Service"). Caller: `collect_prs.py`. GitHub backend: 69 | 64 `--since` is not ISO-8601 |
+| `pr threads <N>` | `[{id, path, status, resolved, comments:[{author:{login,type}, body, createdAt}]}]`: every live thread; `path` = `threadContext.filePath` without the leading `/` (null for a conversation thread), `resolved` true for `fixed`, `closed`, `wontFix`, `byDesign`. System comments, deleted ones and the overflow thread are left out. Caller: `collect_prs.py`. GitHub backend: 69 | 3 not found |
 
 `pr list` `body` is the raw description: a moved history block shows as its stub line. `pr comments` leaves out
 `system` comments, deleted ones and the overflow thread. `$top` is passed as `--limit`.
@@ -317,7 +322,69 @@ the pack may (`test_current_request_allows_solo_owner`). Not on the list, the pa
 requests but never approve. The mechanism cannot tell the person from an agent holding their token,
 on either provider: lanes must never write `done` (block-template.md, "Trust boundary").
 
+## Ticket filers on Azure DevOps
+
+`super-qa-file-bug.sh`, `super-review-file-refactor.sh` and `super-collect-file.sh` take the provider from
+`--config` (the collect and review filers already did) or `$SB_CONFIG`; no config means GitHub, whose path is
+unchanged. On `azure-devops` they never call `gh` and the GitHub knobs (`SUPER_QA_PROJECT_OWNER/TITLE`,
+`SUPER_QA_TARGET_OPTION_NAME`, `SUPER_QA_REPO`) are ignored. The QA filer also takes `--column` (default
+`Ready`, as the GitHub fallback chain lands a bug there on a seven-column board); the collect router passes
+`Backlog`; the review filer picks Ready with acceptance criteria, else Backlog.
+
+**Fingerprint evidence is visible text.** Azure DevOps strips HTML comments from a work item body and comment on
+save, so `<!-- super-qa-meta ... -->`, `<!-- super-review-fingerprint: ... -->` and the collect comments cannot
+carry anything. Instead each filer ends the body with a rule and plain lines:
+
+- QA: a bullet list `- route: ...`, `- spec`, `- iteration`, `- area`, `- category`, `- priority`, `- type` and
+  `- fingerprint: <fp>`;
+- review: `super-review-fingerprint: <fp>` on its own line;
+- collect (added above the child filer's own): `- super-collect-fingerprint: <fp>` and `- super-collect-source: <s>`.
+
+The dedupe is the SAME match as GitHub: a whitespace-delimited token equal to the fingerprint in any ticket body,
+read from `forge ticket history` (`[{number,state,body}]`, every state, body already decoded: the service stores
+`&` and `"` as entities and the forge reverses that, so a fingerprint with those characters still matches). An
+open hit gets a "Seen again" comment (`forge ticket comment`) and no new ticket; a closed-only hit is a
+recurrence (collect). Why it is safe: nothing depends on hidden text; a light edit of the prose leaves the footer
+line alone; the token boundary rule means `err|x|441` never hits `err|x|4411`; and if a person deletes the line
+the worst case is one duplicate ticket, never a lost finding or a wrongly merged one. A ticket is on the board as
+soon as it exists, so `forge ticket create --column` is the only placement step. Exit codes are the filers' own:
+`71` filed but not placed (the number is still the last stdout line), `70` the column does not exist (nothing was
+filed), `79` an unknown outcome (the run is halted).
+
+## Rate limits on Azure DevOps
+
+There is no quota endpoint; the transport saves `X-RateLimit-*` headers (`ado-quota.json`) and records every 429
+(`ado-throttle.json`) and waits `Retry-After` itself. Consequently:
+
+- `super-board-gh-guard.sh` (provider from `$SB_CONFIG`): `sb_gh_guard_check` never calls `gh` and never blocks
+  without a reading; it halts on the shared halt file (79) and sleeps only when the saved `remaining` is at or
+  below `SB_ADO_GUARD_MIN_REMAINING` (5) with `reset` (epoch seconds) in the future, at most 300 s. The per-worker
+  call budget is unchanged. `sb_gh_guard_summary` prints `[gh-guard] azure-devops remaining=<n>/<limit> cost=<total>
+  throttled=<429s>`; a worker appends the part after the tag to its PR handoff comment as
+  `gh-quota-on-exit: azure-devops remaining=<n>/<limit> cost=<total> throttled=<429s>` (`?` for what the service
+  never sent).
+- `super-board-throttle.sh`: "the wave hit the hourly limit" means the service answered 429 during the wave, or a
+  lane result names one (`HTTP 429`, `Azure DevOps throttled`, `too many requests`). It reads and resets the count
+  with `forge quota --take-throttle` (`--dry-run` only reads it) and steps `max_workers` down on that and nothing else.
+
+## Other scripts on Azure DevOps
+
+- `super-board-stop.sh`: `forge pr refs` finds the PR of `issue-<N>-*`, `ticket comment` / `pr comment` leave the
+  wrap-up, `ticket release` drops our claim (and `--force` when a claim tag that is not ours is still there),
+  `ticket edit --remove-label` drops the `loop:*` labels.
+- `super-board-status.py` loads the Azure DevOps backend in-process (no bash, no jq, no subprocess); a status
+  read neither writes nor honours the halt file; a blocked card's reason is its newest comment.
+- `hooks/cleanup-wt.py` asks the forge (`pr refs`, found in `.claude/bin` / `.agents/bin`, or `CLEANUP_WT_FORGE`).
+  A PR counts as merged only when it is `completed` AND its recorded source head equals the local branch tip;
+  an unreadable list keeps every remote branch and says so. It runs with a throwaway halt file.
+- `super-board-setup.py check|fix`: `gh` is not required, a token is; the `ado` block is validated; the board is
+  read with `board ensure --check` and set up by `fix`; an empty repository is a must-fix with the exact git
+  commands; the routing labels are tags and need no creation.
+- `skills/super-collect/scripts/collect_prs.py`: `pr merged` + `pr threads`. The `github` source's open-issue read
+  is `ticket list --state open --limit N`.
+- `super-board-run.sh` (legacy `claude-p`) exits 78 on any provider but GitHub.
+
 ## Not behind the forge yet
 
-The card verbs in `super-board-card.sh`, and the filer, lane, run and status scripts still call `gh`
-directly. `super-board-preflight.sh` skips the GitHub quota guard on Azure DevOps.
+The card verbs in `super-board-card.sh` and the lane scripts call `gh` directly on GitHub (they hand an
+`azure-devops` config to the forge). `super-board-preflight.sh` skips the GitHub quota guard on Azure DevOps.

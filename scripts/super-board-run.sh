@@ -88,6 +88,15 @@ WORKER_BACKEND=$(jq -r '.worker_backend // "workflow"' "$CONFIG_PATH")
 NO_PROGRESS_CYCLES=$(jq -r '.no_progress_cycles // 6' "$CONFIG_PATH")
 MAX_DISPATCHES=$(jq -r '.max_dispatches // 0' "$CONFIG_PATH")
 
+# This legacy dispatcher drives GitHub only (`gh` for issues, PRs and the project board). Any other
+# provider refuses here, before any call, instead of half-working.
+PROVIDER=$(jq -r '.provider // "github"' "$CONFIG_PATH" | tr -d '\r')
+if [ "$PROVIDER" != "github" ]; then
+  echo "🛑 board '${CONFIG_SLUG}' uses provider \"${PROVIDER}\"; the legacy claude-p dispatcher supports GitHub only." >&2
+  echo "    Run it in-session instead: /super-board run ${CONFIG_SLUG}  (the workflow backend; see references/run-workflow.md)" >&2
+  exit 78
+fi
+
 # Workflow is the default backend (v1.6.0). This legacy dispatcher only runs
 # when the config opts in explicitly — never by accident or stale habit.
 if [ "$WORKER_BACKEND" != "claude-p" ]; then

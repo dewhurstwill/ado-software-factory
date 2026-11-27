@@ -74,7 +74,9 @@ Azure DevOps support is being added in this fork and is not complete:
 | Pull requests: open, comment, read the diff, rewrite PR body blocks | Works, checked live |
 | Merge gate: pinned to the reviewed commit, squash, branch policies respected | Works, checked live |
 | Approving a held merge with a `done` comment | Works, checked live. Only sign-ins listed in `ado.approvers` count |
-| Onboarding questions, status view, ticket filers, collectors, skill instructions | Still GitHub-only |
+| Status view, ticket filers (bug, refactor, collect), stop, cleanup hook, rate-limit guard | Works; status and bug filer checked live |
+| Onboarding checks (`super-board-setup.py`): token, board shape, empty repository | Works against the test server; not yet run live |
+| Skill instructions (what lane agents are told to run) and onboarding questions | Still written for GitHub |
 
 To try it, install from this fork and add the block below to
 `.claude/super-board/configs/<slug>.json`:

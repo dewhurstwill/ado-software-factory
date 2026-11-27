@@ -15,6 +15,13 @@
 # costs quota. The failure text is still trusted over any reading: right after a reset
 # `rate_limit` has been seen reporting 4999 while calls still failed.
 #
+# AZURE DEVOPS (config "provider": "azure-devops"). There is no quota endpoint, so "the wave hit
+# the hourly limit" means the service answered HTTP 429: the forge's transport records every 429
+# (count and time) beside ado-quota.json, and this script TAKES that count (`forge quota
+# --take-throttle`: read, then reset, so each wave sees only its own; --dry-run only reads it). Any
+# 429 since the last take, or a lane result naming one ("HTTP 429", "Azure DevOps throttled", "too
+# many requests"), steps `max_workers` down; a healthy wave never does. `gh` is never run.
+#
 # Usage:
 #   super-board-throttle.sh --config <cfg.json> [--results <file>] [--rate <rate_limit.json>] [--dry-run]
 #
@@ -36,7 +43,10 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$CONFIG" ] && [ -f "$CONFIG" ] || { echo "config not found: ${CONFIG:-<unset>}" >&2; exit 66; }
 
-if [ -n "$RATE" ]; then
+PROVIDER=$(jq -r '.provider // "github"' "$CONFIG" | tr -d '\r')
+if [ "$PROVIDER" = azure-devops ]; then
+  PAYLOAD='{}'
+elif [ -n "$RATE" ]; then
   PAYLOAD=$(cat "$RATE")
 else
   # shellcheck source=super-board-gh-guard.sh
@@ -47,7 +57,19 @@ REMAINING=$(printf '%s' "$PAYLOAD" | jq -r '.resources.graphql.remaining // "unk
 
 WHY=""
 [ "$REMAINING" = "0" ] && WHY="graphql remaining 0"
-if [ -z "$WHY" ] && [ -n "$RESULTS" ] && [ -f "$RESULTS" ] \
+if [ "$PROVIDER" = azure-devops ]; then
+  TAKE=--take-throttle; [ "$DRY" -eq 0 ] || TAKE=--throttle
+  HITS=$(python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/super-board-forge.py" --config "$CONFIG" quota "$TAKE" 2>/dev/null \
+    | jq -r '.throttled // 0' 2>/dev/null | tr -d '\r') || HITS=0
+  case "$HITS" in ''|*[!0-9]*) HITS=0 ;; esac
+  if [ "$HITS" -gt 0 ]; then
+    WHY="Azure DevOps answered 429 ${HITS} time(s) during the wave"
+  elif [ -n "$RESULTS" ] && [ -f "$RESULTS" ] \
+       && grep -Eqi 'HTTP 429|too many requests|Azure DevOps throttled|rate.?limit(ed)? (exceeded|hit|reached)' "$RESULTS"; then
+    WHY="a lane result reports an Azure DevOps rate-limit failure"
+  fi
+fi
+if [ -z "$WHY" ] && [ "$PROVIDER" != azure-devops ] && [ -n "$RESULTS" ] && [ -f "$RESULTS" ] \
    && grep -Eqi 'rate.?limit(ed)? (exceeded|hit|reached)|api rate limit|secondary rate limit|graphql.{0,40}(quota|rate.?limit)|was submitted too quickly' "$RESULTS"; then
   WHY="a lane result reports a GitHub rate-limit failure"
 fi

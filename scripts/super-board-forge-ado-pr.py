@@ -15,6 +15,7 @@ Three things Azure Repos does not give us, handled here:
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -48,6 +49,31 @@ def bind(forge_module, ado_module):
 def units(text):
     """Length as the service counts it: UTF-16 code units (an emoji is 2)."""
     return len(text.encode('utf-16-le')) // 2
+
+
+def parse_time(text):
+    """An ISO-8601 timestamp from the service (`Z` or an offset, up to 7 fractional digits) as an aware
+    datetime, or None. Python 3.9's fromisoformat takes neither the `Z` nor 7 digits."""
+    if not isinstance(text, str):
+        return None
+    text = re.sub(r'(\.\d{6})\d+', r'\1', text.strip().replace('Z', '+00:00'))
+    try:
+        value = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=datetime.timezone.utc)
+
+
+RESOLVED = ('fixed', 'closed', 'wontfix', 'bydesign')
+BOT_NAME = re.compile(r'\[bot\]$|^svc[._-]|build service', re.I)
+
+
+def who(identity):
+    """{login, type}: the unique name (else display name); `Bot` for a service identity (heuristic:
+    `[bot]`, `svc.` prefix, or a "Build Service" display name)."""
+    identity = identity or {}
+    login = identity.get('uniqueName') or identity.get('displayName') or ''
+    return {'login': login, 'type': 'Bot' if BOT_NAME.search(login) or BOT_NAME.search(identity.get('displayName') or '') else 'User'}
 
 
 def branch_of(ref):
@@ -121,6 +147,15 @@ def v_pr_list(value):
     ado.need(isinstance(value, dict) and isinstance(value.get('value'), list), 'pull request list missing')
     ado.need(all(isinstance(p, dict) and type(p.get('pullRequestId')) is int and isinstance(p.get('sourceRefName'), str)
                  for p in value['value']), 'pull request list malformed')
+
+
+def v_repository(value):
+    ado.need(isinstance(value, dict) and isinstance(value.get('name'), str) and value['name'], 'repository malformed')
+
+
+def v_refs(value):
+    ado.need(isinstance(value, dict) and isinstance(value.get('value'), list)
+             and all(isinstance(r, dict) and isinstance(r.get('name'), str) for r in value['value']), 'branches malformed')
 
 
 def v_threads(value):
@@ -234,6 +269,29 @@ class AdoPrVerbs:
         return forge.ForgeError(f'the pull request body is {error.size} characters after moving the history and visual '
                                 f'blocks out; Azure DevOps allows {CAP} in a description. Shorten the body; nothing was written.',
                                 EXIT_REFUSED)
+
+    # ---- the repository itself ---------------------------------------------------------------------------
+    def repository_verb(self, argv):
+        """`repository`: is the Azure Repos repository usable as a PR base? A NEW repository has no
+        branch and no commit, and a pull request cannot be opened until the base branch exists.
+        `{repository, defaultBranch, empty, base, baseExists}`: `empty` = no branch at all; `base` =
+        config `base_branch` (null when unset); `baseExists` = that branch exists (null when unset)."""
+        forge.parser('repository').parse_args(argv)
+        repo = f'{self.proj_api}/git/repositories/{ado.q(self.repository)}'
+        found = self.read('GET', f'{repo}?api-version={ado.API}', validate=v_repository, what='repository')
+        heads = self.read('GET', f'{repo}/refs?filter=heads/&$top=1&api-version={ado.API}', validate=v_refs,
+                          what='repository branches')['value']
+        base = self.config.get('base_branch') or None
+        exists = None
+        if base and heads:
+            wanted = f'refs/heads/{base}'
+            listed = self.read('GET', f'{repo}/refs?filter=heads/{ado.q(base).replace("%2F", "/")}&api-version={ado.API}',
+                               validate=v_refs, what='repository base branch')['value']
+            exists = any(r['name'] == wanted for r in listed)
+        elif base:
+            exists = False
+        print(json.dumps({'repository': found['name'], 'defaultBranch': found.get('defaultBranch') and branch_of(found['defaultBranch']),
+                          'empty': not heads, 'base': base, 'baseExists': exists}))
 
     # ---- head, state ---------------------------------------------------------------------------------
     def pr_head(self, argv):
@@ -530,6 +588,73 @@ class AdoPrVerbs:
                 entry['headRefName'] = branch_of(pr['sourceRefName'])
                 entry['files'] = [{'path': path} for path in self.changed_paths(n)]
             out.append(entry)
+        print(json.dumps(out))
+
+    def pr_refs(self, argv):
+        """`pr refs`: branch facts for callers that decide whether a local branch is safe to delete
+        (the cleanup hook) or find a PR by branch (stop). ONE list call, unlike `pr list`, which
+        also reads every open PR's changed files. A merged row is only `completed` with a recorded
+        source head (`lastMergeSourceCommit` stays set on a completed PR); anything else is left out
+        rather than guessed, because a wrong "merged" deletes work."""
+        p = forge.parser('pr refs --state open|merged --limit N')
+        p.add_argument('--state', required=True, choices=sorted(LIST_STATUS))
+        p.add_argument('--limit', required=True, type=forge.positive)
+        a = p.parse_args(argv)
+        value = self.read('GET', self.pr_api(extra=f'searchCriteria.status={LIST_STATUS[a.state]}&$top={a.limit}&'),
+                          validate=v_pr_list, what='pull request list')
+        out = []
+        for pr in value['value'][:int(a.limit)]:
+            commit = (pr.get('lastMergeSourceCommit') or {}).get('commitId')
+            head = commit if isinstance(commit, str) and SHA.fullmatch(commit) else None
+            if a.state == 'merged' and (pr.get('status') != 'completed' or head is None):
+                continue
+            target = pr.get('targetRefName')
+            out.append({'number': pr['pullRequestId'], 'headRefName': branch_of(pr['sourceRefName']),
+                        'baseRefName': branch_of(target) if isinstance(target, str) else None, 'headRefOid': head})
+        print(json.dumps(out))
+
+    def pr_merged(self, argv):
+        """`pr merged --since ISO --limit N`: completed PRs closed at or after `since`, newest first, for
+        mining review comments: `[{number,title,url,mergedAt,author:{login,type}}]`. One list call (`$top`
+        is N); the time filter is applied here on `closedDate`."""
+        p = forge.parser('pr merged --since <iso> --limit N')
+        p.add_argument('--since', required=True); p.add_argument('--limit', required=True, type=forge.positive)
+        a = p.parse_args(argv)
+        since = parse_time(a.since)
+        if since is None:
+            raise forge.Usage(f'--since is not an ISO-8601 timestamp: {a.since}')
+        value = self.read('GET', self.pr_api(extra=f'searchCriteria.status=completed&$top={a.limit}&'),
+                          validate=v_pr_list, what='pull request list')
+        out = []
+        for pr in value['value']:
+            closed = parse_time(pr.get('closedDate'))
+            if pr.get('status') != 'completed' or closed is None or closed < since:
+                continue
+            out.append((closed, {'number': pr['pullRequestId'], 'title': pr.get('title') or '', 'url': self.pr_web(pr['pullRequestId']),
+                                 'mergedAt': pr['closedDate'], 'author': who(pr.get('createdBy'))}))
+        out.sort(key=lambda row: row[0], reverse=True)
+        print(json.dumps([row for _, row in out[:int(a.limit)]]))
+
+    def pr_threads(self, argv):
+        """`pr threads <N>`: every live thread with what the comment list drops, the file path and the
+        resolved state: `[{id, path, status, resolved, comments:[{author:{login,type}, body, createdAt}]}]`.
+        `path` is `threadContext.filePath` without the leading `/` (null for a conversation thread);
+        `resolved` is true for the statuses fixed, closed, wontFix and byDesign. System comments, deleted
+        ones and the overflow thread are left out, as in `pr comments`."""
+        p = forge.parser('pr threads <N>'); p.add_argument('number', type=forge.positive)
+        out = []
+        for thread in self.get_threads(p.parse_args(argv).number):
+            first = next((c for c in thread['comments'] if not c.get('isDeleted')), None)
+            if first is not None and not is_system(first) and comment_text(first).startswith(OVERFLOW_MARK):
+                continue
+            comments = [{'author': who(c.get('author')), 'body': comment_text(c), 'createdAt': c.get('publishedDate') or ''}
+                        for c in thread['comments'] if live(c)]
+            if not comments:
+                continue
+            path = (thread.get('threadContext') or {}).get('filePath')
+            status = str(thread.get('status') if thread.get('status') is not None else 'unknown')
+            out.append({'id': thread['id'], 'path': path.lstrip('/') if isinstance(path, str) and path else None,
+                        'status': status, 'resolved': status.lower() in RESOLVED, 'comments': comments})
         print(json.dumps(out))
 
     # ---- comments, links ---------------------------------------------------------------------------------------------------

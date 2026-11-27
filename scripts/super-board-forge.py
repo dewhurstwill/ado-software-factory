@@ -50,13 +50,18 @@ Azure DevOps only (super-board-forge-ado-pr.py), new verbs; the GitHub backend l
   pr comments <N>                       [[{id,body,user,created_at,updated_at}]] (no system comments)
   pr comment-edit <N> <threadId>.<commentId> --body-file F
   pr links <N>                          {closes: [work item ids]}
+  pr refs --state open|merged --limit N [{number,headRefName,baseRefName,headRefOid}] in ONE call (merged: only
+                                        completed PRs with a recorded source head); cleanup hook and stop
+  pr merged --since ISO --limit N       [{number,title,url,mergedAt,author:{login,type}}] completed PRs closed since (collect prs)
+  pr threads <N>                        [{id,path,status,resolved,comments:[{author,body,createdAt}]}] (path/resolved: collect prs)
 On Azure DevOps the shared pr verbs behave as follows: metadata and diff come from local git (the service has
 no diff); set-body moves the history, then visual, block into an overflow thread past 4,000 characters and
 body puts it back (exit 65 if still too long); merge pins the head, completes, then POLLS (exit 6 head moved,
 5 conflicts, 7 branch policy, 65 other refusal, 69 outcome unknown). Never trust lastMergeCommit before status is completed. See providers.md.
 Azure DevOps tracker verbs (super-board-forge-ado.py; shapes in providers.md): board ids|items|
 status|item-id|move|ensure [--check]; ticket view|list|graph|history|create|edit|close|comment|
-comments|comment-edit|claim|release [--force]; whoami; quota. Tags: `add` merges, `replace` sets;
+comments|comment-edit|claim|release [--force]; whoami; quota [--throttle|--take-throttle]; repository
+({repository, defaultBranch, empty, base, baseExists}: a new Azure Repos repository has no base branch yet). Tags: `add` merges, `replace` sets;
 claims are per-holder tags `sb:claimed-<6hex>` verified after the add (see providers.md). The GitHub backend leaves these unimplemented (69),
 except `ticket comments` (above).
 
@@ -174,6 +179,9 @@ class Backend:
     def pr_set_body(self, argv): self.unavailable('pr set-body')
     def pr_merge(self, argv): self.unavailable('pr merge')
     def pr_list(self, argv): self.unavailable('pr list')
+    def pr_refs(self, argv): self.unavailable('pr refs')
+    def pr_merged(self, argv): self.unavailable('pr merged')
+    def pr_threads(self, argv): self.unavailable('pr threads')
     def pr_create(self, argv): self.unavailable('pr create')
     def pr_ready(self, argv): self.unavailable('pr ready')
     def pr_comment(self, argv): self.unavailable('pr comment')
@@ -196,6 +204,7 @@ class Backend:
     def ticket_release(self, argv): self.unavailable('ticket release')
     def whoami_verb(self, argv): self.unavailable('whoami')
     def quota_verb(self, argv): self.unavailable('quota')
+    def repository_verb(self, argv): self.unavailable('repository')
     def board(self, argv): self.unavailable('board ' + (argv[0] if argv else '<verb>'))
 
 
@@ -452,6 +461,9 @@ DISPATCH = {
     ('pr', 'set-body'): 'pr_set_body',
     ('pr', 'merge'): 'pr_merge',
     ('pr', 'list'): 'pr_list',
+    ('pr', 'refs'): 'pr_refs',
+    ('pr', 'merged'): 'pr_merged',
+    ('pr', 'threads'): 'pr_threads',
     ('pr', 'create'): 'pr_create',
     ('pr', 'ready'): 'pr_ready',
     ('pr', 'comment'): 'pr_comment',
@@ -474,6 +486,7 @@ DISPATCH = {
     ('ticket', 'release'): 'ticket_release',
     ('whoami',): 'whoami_verb',
     ('quota',): 'quota_verb',
+    ('repository',): 'repository_verb',
 }
 forge_ado.bind(sys.modules[__name__])
 forge_ado_pr.bind(sys.modules[__name__], forge_ado)

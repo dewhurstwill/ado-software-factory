@@ -45,9 +45,11 @@ def stored(text):
     """What the live service hands back for a Markdown long-text field or work item comment:
     `&` and `"` as entities, characters outside the BMP (most emoji) as numeric references.
     `<`/`>` and BMP characters such as the em dash come back as written. Titles are untouched.
-    Measured: `"x" & <b>t</b> 🙋 —` reads back `&quot;x&quot; &amp; <b>t</b> &#128587; —`."""
+    Measured: `"x" & <b>t</b> 🙋 —` reads back `&quot;x&quot; &amp; <b>t</b> &#128587; —`.
+    HTML comments (`<!-- ... -->`) are removed entirely (observed on a real org)."""
     if not isinstance(text, str):
         return text
+    text = re.sub(r'<!--.*?-->', '', text, flags=re.S)  # observed: HTML comments are stripped on save
     text = text.replace('&', '&amp;').replace('"', '&quot;')
     return ''.join(f'&#{ord(ch)};' if ord(ch) > 0xFFFF else ch for ch in text)
 
@@ -78,6 +80,7 @@ class Fake:
             if self.bugs == 'asTasks':
                 c['stateMappings'].pop('Bug', None)
         self.pulls = PrStore(USER)  # pull requests: fake_ado_pr.py
+        self.repo_heads = ['main']  # branches of the repository; [] = a brand new, empty Azure Repos repository
         self.items = {}
         self.comments = {}
         self.next_id = 2
@@ -205,6 +208,17 @@ class Handler(BaseHTTPRequestHandler):
         pulled = fake.pulls.route(req)
         if pulled:
             return pulled
+        mr = re.fullmatch(r'/Factory/_apis/git/repositories/Factory(/refs)?', p)
+        if mr and m == 'GET':
+            if not mr.group(1):
+                out = {'id': 'repo-id', 'name': 'Factory', 'size': 0 if not fake.repo_heads else 4096}
+                if fake.repo_heads:
+                    out['defaultBranch'] = 'refs/heads/' + fake.repo_heads[0]
+                return 200, {}, out
+            wanted = 'refs/' + q.get('filter', [''])[0]
+            rows = [{'name': 'refs/heads/' + b, 'objectId': 'a' * 40} for b in fake.repo_heads
+                    if ('refs/heads/' + b).startswith(wanted)]
+            return 200, {}, {'count': len(rows), 'value': rows[:int(q.get('$top', ['1000'])[0])]}
         if p == '/_apis/connectionData':
             return 200, {}, {'authenticatedUser': {
                 'id': USER['id'], 'providerDisplayName': 'Example User',

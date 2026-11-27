@@ -21,6 +21,12 @@
 #     [--area <area>] [--pr <number>] [--column <name>]
 #
 # Stdout: the issue number (new, or the existing one on a fingerprint hit).
+#
+# Azure DevOps (config "provider": "azure-devops"): the card is filed through the forge. The service
+# strips HTML comments from a work item on save, so the fingerprint stamp is a VISIBLE line at the
+# end of the body (`super-review-fingerprint: <fp>`), dedupe is the same whitespace-token match
+# against `forge ticket history`, and a work item is on the board once it exists: the holding
+# column is set when it is created.
 set -euo pipefail
 
 CONFIG=""; TITLE=""; BODY_FILE=""; FINGERPRINT=""
@@ -65,6 +71,98 @@ CONFIG_JSON=$(cat "$CONFIG")
 OWNER=$(echo "$CONFIG_JSON" | jq -r '.project.owner')
 NUMBER=$(echo "$CONFIG_JSON" | jq -r '.project.number')
 REPO=$(echo "$CONFIG_JSON" | jq -r '.repo.remote // empty')
+
+# --- azure-devops ------------------------------------------------------------
+# Provider from the config. Everything after the `fi` closing this block is the GitHub path, unchanged.
+SB_FORGE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/super-board-forge.py"
+forge() { python3 "$SB_FORGE" --config <(printf '%s\n' "$CONFIG_JSON") "$@"; }
+PROVIDER=$(forge provider | tr -d '\r')
+if [ "$PROVIDER" = azure-devops ]; then
+  forge check || exit $?
+  ADO_COLUMN="$COLUMN"
+  if [ -z "$ADO_COLUMN" ]; then
+    if grep -qiE '^## +Acceptance criteria *$' "$BODY_FILE"; then ADO_COLUMN="Ready"; else ADO_COLUMN="Backlog"; fi
+  fi
+  HISTORY=$(forge ticket history) || exit $?
+  EXISTING=$(printf '%s' "$HISTORY" | jq -r --arg fingerprint "$FINGERPRINT" '[.[] | select(.state == "OPEN" and any(.body | splits("\\s+"); . == $fingerprint)) | .number] | first // empty' | tr -d '\r')
+  ADO_TMP=$(mktemp)
+  trap 'rm -f "$ADO_TMP" "$ADO_TMP.err"' EXIT
+  if [ -n "$EXISTING" ]; then
+    { printf 'Seen again during review%s.\n\n' "${PR:+ of #${PR}}"; cat "$BODY_FILE"; echo; } > "$ADO_TMP"
+    forge ticket comment "$EXISTING" --body-file "$ADO_TMP" >/dev/null 2>&1 \
+      || { forge halt "Comment outcome unknown for #${EXISTING}; inspect before retrying"; exit 79; }
+    echo "$EXISTING"
+    exit 0
+  fi
+  {
+    cat "$BODY_FILE"
+    if ! grep -qiE '^## +Acceptance criteria *$' "$BODY_FILE"; then
+      echo
+      echo "## Acceptance Criteria"
+      echo
+      echo "- [ ] _Not written by the Reviewer that filed this. Run \`super-board lint\` on this card"
+      echo "      before it is built — a card graded against criteria nobody wrote is graded against"
+      echo "      nothing._"
+    fi
+    if ! grep -qiE '^## +Risk *$' "$BODY_FILE"; then
+      echo
+      echo "## Risk"
+      echo
+      echo "🟡 **Medium** · not assessed by the Reviewer that filed this; lint sets it."
+    fi
+    if ! grep -qiE '^## +Blocked by *$' "$BODY_FILE"; then
+      echo
+      echo "## Blocked by"
+      echo
+      echo "- None."
+      echo
+      echo "> Filed mid-review with nothing blocking it. Stated explicitly rather than left silent:"
+      echo "> the wave planner treats a missing section as unreadable, not as None."
+    fi
+    echo
+    echo "---"
+    echo
+    if [ -n "$FILES" ]; then
+      echo "**Files:** $(echo "$FILES" | tr ',' '\n' | sed 's/^/`/; s/$/`/' | paste -sd ', ' -)"
+    fi
+    if [ -n "$PR" ]; then echo "**Spotted reviewing:** #${PR}"; fi
+    echo "**Recommendation strength:** ${STRENGTH}"
+    echo
+    echo "_Filed by Super Review. Not a merge blocker — the PR that surfaced this merged._"
+    echo "_Run \`improve-codebase-architecture\` against this card to design the fix._"
+    echo
+    # Visible on purpose: Azure DevOps strips HTML comments. One whitespace-delimited token after
+    # the label, on its own line, so the dedupe match and a light edit of the prose both keep it.
+    echo "super-review-fingerprint: ${FINGERPRINT}"
+  } > "$ADO_TMP"
+  LABELS=("refactor" "source:review" "strength:${STRENGTH}")
+  if [ -n "$AREA" ]; then LABELS+=("area:${AREA}"); fi
+  LABEL_ARGS=()
+  for l in "${LABELS[@]}"; do LABEL_ARGS+=(--label "$l"); done
+  TITLE=$(printf '%s' "$TITLE" | LC_ALL=C sed -E 's/^[^ -~]{1,16} \[[a-z-]+\] [^:]{1,40}: //')
+  SCOPE="${AREA:-${FINGERPRINT%%|*}}"
+  SCOPE=$(echo "${SCOPE:-code}" | tr '[:upper:]' '[:lower:]' | sed -E 's#[^a-z0-9._/-]+#-#g; s#^-+|-+$##g')
+  forge check || exit $?
+  RC=0
+  CREATED=$(forge ticket create --title "♻️ [refactor] ${SCOPE:-code}: ${TITLE}" --body-file "$ADO_TMP" \
+    "${LABEL_ARGS[@]}" --column "$ADO_COLUMN" 2>"$ADO_TMP.err") || RC=$?
+  cat "$ADO_TMP.err" >&2; rm -f "$ADO_TMP.err"
+  ISSUE_N=$(printf '%s\n' "$CREATED" | tail -1 | tr -d '\r')
+  case "$ISSUE_N" in ''|*[!0-9]*) ISSUE_N="" ;; esac
+  if [ "$RC" -ne 0 ]; then
+    if [ -n "$ISSUE_N" ]; then
+      echo "$ISSUE_N"
+      forge check || exit 79
+      echo "warn: filed #${ISSUE_N} but could not place it in '${ADO_COLUMN}'; inspect before retrying" >&2
+      exit 71
+    fi
+    if [ "$RC" -eq 3 ]; then echo "the board has no '${ADO_COLUMN}' column (nothing was filed); pass --column" >&2; exit 70; fi
+    forge halt "Issue creation response failed; reconcile fingerprint ${FINGERPRINT} before retrying"; exit 79
+  fi
+  [ -n "$ISSUE_N" ] || { forge halt "Ticket creation returned no number; reconcile fingerprint ${FINGERPRINT} before retrying"; exit 79; }
+  echo "$ISSUE_N"
+  exit 0
+fi
 
 # `gh issue` needs an -R when the CWD is a worktree of a different remote; the
 # reviewer always runs from one, so resolve it rather than trusting the CWD.

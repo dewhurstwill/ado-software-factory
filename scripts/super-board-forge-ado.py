@@ -432,10 +432,33 @@ class AdoVerbs:
         except urllib.error.HTTPError as error:
             status, hdrs, raw = error.code, error.headers, error.read()
         self.note_quota(hdrs)
+        if status == 429:
+            self.note_throttle(hdrs)
         return status, hdrs, raw
 
     def quota_path(self):
         return forge.github_read.halt_path().with_name('ado-quota.json')
+
+    def throttle_path(self):
+        return forge.github_read.halt_path().with_name('ado-throttle.json')
+
+    def note_throttle(self, hdrs):
+        """A 429 is the service's "you went over the limit": the throttle step-down reads it as the
+        honest signal that a wave hit the limit (there is no up-front quota to read). Best effort."""
+        try:
+            path = self.throttle_path()
+            try:
+                before = json.loads(path.read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                before = {}
+            record = {'count': int(before.get('count') or 0) + 1, 'last_at': int(time.time()),
+                      'retry_after': number(hdrs.get('Retry-After'))}
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + f'.{os.getpid()}')
+            tmp.write_text(json.dumps(record), encoding='utf-8')
+            os.replace(tmp, path)
+        except OSError:
+            pass
 
     def note_quota(self, hdrs):
         remaining, cost = hdrs.get('X-RateLimit-Remaining'), hdrs.get('X-RateLimit-Cost')
@@ -942,7 +965,11 @@ class AdoVerbs:
             try:
                 self.move(n, a.column)
             except forge.ForgeError as error:
+                # The ticket exists: hand its number to the caller (stdout, last line) so a filer can
+                # report "filed, not placed" instead of losing it, then fail.
                 print(f'created #{n} but could not place it in "{a.column}": {error}', file=sys.stderr)
+                print(self.web_url(n))
+                print(n)
                 raise
         print(self.web_url(n))
         print(n)
@@ -1106,7 +1133,25 @@ class AdoVerbs:
         print(json.dumps(self.whoami()))
 
     def quota_verb(self, argv):
-        forge.parser('quota').parse_args(argv)
+        """The saved X-RateLimit-* record plus `seen`. `--throttle` prints instead the 429s the
+        transport has recorded since the last take, `{throttled, throttled_at}`; `--take-throttle`
+        does the same and then resets the count, so a caller asking once per wave sees only that
+        wave's. (Separate from the plain record so its shape never changes.)"""
+        p = forge.parser('quota [--throttle | --take-throttle]')
+        p.add_argument('--throttle', action='store_true'); p.add_argument('--take-throttle', action='store_true')
+        a = p.parse_args(argv)
+        if a.throttle or a.take_throttle:
+            try:
+                hit = json.loads(self.throttle_path().read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                hit = {}
+            print(json.dumps({'throttled': int(hit.get('count') or 0), 'throttled_at': hit.get('last_at')}))
+            if a.take_throttle and hit:
+                try:
+                    self.throttle_path().unlink()
+                except OSError:
+                    pass
+            return
         try:
             record = json.loads(self.quota_path().read_text(encoding='utf-8'))
             record['seen'] = True

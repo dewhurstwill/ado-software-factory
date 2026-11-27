@@ -9,6 +9,13 @@ author kind (User / Bot) on each, and `superReview: true` on super-review report
 recurring problems, not this script.
 
     collect_prs.py list [--since 14d|YYYY-MM-DD] [--repo owner/name] [--max 200] [--config cfg.json]
+
+Azure DevOps (config "provider": "azure-devops"): the same JSON comes from the forge
+(`super-board-forge.py pr merged` for the window, `pr threads <N>` per PR for the comments and
+the per-thread file path and resolved state). Conversation threads become `comments`, file
+threads become `threads`; Azure DevOps has no review objects, so `reviews` is always empty.
+The forge is found in $SUPER_BOARD_BIN, the installed `.claude/bin` / `.agents/bin`, or the
+pack's `scripts/`. One `pr threads` call per PR: lower `--max` on a busy project.
 """
 from __future__ import annotations
 
@@ -50,6 +57,48 @@ def gh_graphql(query, variables, run=subprocess.run):
     if r.returncode != 0:
         raise RuntimeError(f"gh api graphql failed: {r.stderr.strip()[:300]}")
     return json.loads(r.stdout)
+
+
+def find_forge():
+    here = os.path.dirname(os.path.abspath(__file__))
+    cands = [os.environ.get("SUPER_BOARD_BIN") or "", os.path.join(os.getcwd(), ".claude", "bin"),
+             os.path.join(os.getcwd(), ".agents", "bin"), os.path.join(here, "..", "..", "..", "bin"),
+             os.path.join(here, "..", "..", "..", "scripts")]
+    for d in cands:
+        if d and os.path.isfile(os.path.join(d, "super-board-forge.py")):
+            return os.path.join(d, "super-board-forge.py")
+    return None
+
+
+def forge_out(config_path, *args, run=subprocess.run):
+    """stdout of one forge verb; RuntimeError (with the forge's own message) when it fails."""
+    forge = find_forge()
+    if not forge:
+        raise RuntimeError("super-board-forge.py not found (set SUPER_BOARD_BIN or run install.sh)")
+    r = run([sys.executable, forge, "--config", config_path, *args], capture_output=True, text=True, encoding="utf-8")
+    if r.returncode != 0:
+        raise RuntimeError(f"forge {' '.join(args[:2])} failed (exit {r.returncode}): {r.stderr.strip()[:300]}")
+    return r.stdout
+
+
+def shape_ado(pr, threads):
+    """The `shape()` output for one Azure DevOps PR: conversation threads are comments, file threads are threads."""
+    def note_ado(c):
+        body = c.get("body") or ""
+        return {"author": {"login": c["author"]["login"], "bot": c["author"]["type"] == "Bot"},
+                "body": body[:BODY_MAX], "superReview": MARKER in body}
+    conversation = [c for t in threads if not t.get("path") for c in t["comments"] if c.get("body")]
+    inline = [{"path": t["path"], "resolved": t["resolved"], "comments": [note_ado(c) for c in t["comments"]]}
+              for t in threads if t.get("path")]
+    return {"number": pr["number"], "title": pr["title"], "url": pr["url"], "mergedAt": pr["mergedAt"],
+            "author": {"login": pr["author"]["login"], "bot": pr["author"]["type"] == "Bot"},
+            "comments": [note_ado(c) for c in conversation], "reviews": [], "threads": inline}
+
+
+def list_prs_ado(config_path, since, max_prs=200, run=subprocess.run):
+    merged = json.loads(forge_out(config_path, "pr", "merged", "--since", since.isoformat(), "--limit", str(max_prs), run=run))
+    prs = [shape_ado(pr, json.loads(forge_out(config_path, "pr", "threads", str(pr["number"]), run=run))) for pr in merged]
+    return prs[:max_prs], len(prs) >= max_prs
 
 
 def repo_slug(cfg, override=None):
@@ -104,7 +153,20 @@ def main(argv=None):
     lp.add_argument("--repo")
     lp.add_argument("--max", type=int)
     a = p.parse_args(argv)
-    cfg, _ = cc.active_config(a.config)
+    cfg, cfg_path = cc.active_config(a.config)
+    if (cfg or {}).get("provider") == "azure-devops":
+        since = cc.since(a.since, cc.window_days(cfg))
+        max_prs = a.max or int(cc.collect_block(cfg, "prs").get("max_prs", 200))
+        try:
+            repo = forge_out(cfg_path, "repo").strip()
+            prs, truncated = list_prs_ado(cfg_path, since, max_prs)
+        except (RuntimeError, ValueError) as e:
+            print(json.dumps({"source": "prs", "status": "unavailable", "error": str(e)}))
+            return 2
+        print(json.dumps({"source": "prs", "repo": repo, "since": since.isoformat(), "truncated": truncated,
+                          "superReviewReports": sum(c["superReview"] for pr in prs for c in pr["comments"]),
+                          "prs": prs}, indent=1))
+        return 0
     repo = repo_slug(cfg, a.repo)
     if not repo:
         print(json.dumps({"source": "prs", "status": "unavailable", "error": "no repo.remote in config; pass --repo"}))

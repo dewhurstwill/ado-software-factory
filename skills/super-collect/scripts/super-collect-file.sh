@@ -24,6 +24,11 @@
 #     [--label <l>]... [--yes]          # e.g. --label needs-triage --label ux
 #   super-collect-file.sh --config <cfg.json> --adopt <issue#> --type bug|feature|refactor [--yes]
 #
+# Azure DevOps (config "provider": "azure-devops"): tickets go through super-board-forge.py. The
+# fingerprint and source are VISIBLE lines in the body (the service strips HTML comments on save),
+# dedupe matches the same whitespace token against `forge ticket history`, the holding column is
+# Backlog, and `--adopt` places an existing work item that has no board column.
+#
 # Stdout: dry-run → one `would-file|duplicate|recurrence|would-adopt` plan line;
 #         --yes   → the issue number (new, existing on a dedupe hit, or adopted).
 # Exits:  0 ok · 64 bad args · 65 no holding column · 66 unreadable/weak body
@@ -77,11 +82,13 @@ else
   [ "$TYPE" != "fix" ] || die "--adopt takes bug|feature|refactor" 64
 fi
 
+PROVIDER=$(jq -r '.provider // "github"' "$CONFIG")
+case "$PROVIDER" in github|azure-devops) ;; *) die "unknown provider \"$PROVIDER\" in config (expected github or azure-devops)" 66 ;; esac
 OWNER=$(jq -r '.project.owner // empty' "$CONFIG")
 NUMBER=$(jq -r '.project.number // empty' "$CONFIG")
 PTITLE=$(jq -r '.project.title // empty' "$CONFIG")
 REMOTE=$(jq -r '.repo.remote // empty' "$CONFIG")
-[ -n "$OWNER" ] && [ -n "$NUMBER" ] || die "config lacks project.owner / project.number" 66
+[ "$PROVIDER" = azure-devops ] || { [ -n "$OWNER" ] && [ -n "$NUMBER" ]; } || die "config lacks project.owner / project.number" 66
 REPO_FLAG=()
 [ -z "$REMOTE" ] || REPO_FLAG=(-R "$(echo "$REMOTE" | sed -E 's#(git@github\.com:|https://github\.com/)##; s#\.git$##')")
 
@@ -98,7 +105,9 @@ fi
 # Router-owned duplicate/adopt writes share the same halt as the child filers.
 GITHUB_READ="$BIN/super-board-github-read.py"
 python3 "$GITHUB_READ" --check || exit $?
+forge() { python3 "$BIN/super-board-forge.py" --config "$CONFIG" "$@"; }
 REPO_NAME="${REPO_FLAG[1]:-}"
+[ "$PROVIDER" != azure-devops ] || REPO_NAME=$(forge repo | tr -d '\r') || exit $?
 if [ -z "$REPO_NAME" ]; then
   REPO_NAME=$(python3 "$GITHUB_READ" --kind scalar -- repo view --json nameWithOwner --jq .nameWithOwner) || exit $?
 fi
@@ -141,6 +150,12 @@ if [ -z "$ADOPT" ]; then
 fi
 
 # --- holding column ---------------------------------------------------------
+if [ "$PROVIDER" = azure-devops ]; then
+  # A work item is on the board once it exists; the holding column is Backlog, one of the seven.
+  FIELDS='{"fields":[]}'
+  HOLD=Backlog
+  forge board ids | jq -e '.columns | index("Backlog")' >/dev/null || die "the board has no Backlog column — refusing: the filers would fall back to Ready" 65
+else
 FIELDS=$(python3 "$GITHUB_READ" --kind fields -- project field-list "$NUMBER" --owner "$OWNER" --format json) || exit $?
 HOLD=""
 for c in Backlog Todo "To do" Triage Inbox; do
@@ -148,6 +163,7 @@ for c in Backlog Todo "To do" Triage Inbox; do
   if [ -n "$hit" ]; then HOLD="$hit"; break; fi
 done
 [ -n "$HOLD" ] || die "project ${OWNER}/${NUMBER} has no holding column (Backlog, Todo, To do, Triage, Inbox) — refusing: the filers would fall back to Ready" 65
+fi
 
 place() { # $1 = issue url
   local item_id project_id field_id option_id
@@ -175,7 +191,31 @@ tag() { # $1 = issue number, rest = labels; best-effort
   return 0
 }
 
+if [ "$PROVIDER" = azure-devops ]; then
+  tag() { # $1 = work item number, rest = tags; best-effort
+    local n="$1"; shift
+    for l in "$@"; do
+      forge check || return $?
+      forge ticket edit "$n" --add-label "$l" >/dev/null 2>&1 || echo "warn: could not label #${n} ${l}" >&2
+    done
+    return 0
+  }
+fi
+
 # --- adopt ------------------------------------------------------------------
+if [ -n "$ADOPT" ] && [ "$PROVIDER" = azure-devops ]; then
+  if [ "$YES" -ne 1 ]; then echo "would-adopt|#${ADOPT}|${TYPE}|${HOLD}"; exit 0; fi
+  forge ticket view "$ADOPT" >/dev/null || exit $?
+  RC=0; forge board status "$ADOPT" >/dev/null 2>&1 || RC=$?
+  # A card already in a column is live work: never reset it to Backlog.
+  if [ "$RC" -eq 0 ]; then echo "$ADOPT"; exit 0; fi
+  [ "$RC" -eq 3 ] || { forge check || { echo "$ADOPT"; exit 79; }; die "cannot read the board column of #${ADOPT} (exit ${RC})" 70; }
+  state begin "$ADOPT" || exit $?
+  tag "$ADOPT" "$TYPE" "source:collect" ${EXTRA_LABELS[@]+"${EXTRA_LABELS[@]}"} || { RC=$?; echo "$ADOPT"; exit "$RC"; }
+  forge board move "$ADOPT" "$HOLD" >/dev/null || { RC=$?; echo "$ADOPT"; [ "$RC" -eq 79 ] && exit 79; echo "warn: #${ADOPT} not placed in '${HOLD}'" >&2; exit 71; }
+  state success "$ADOPT" || exit $?
+  echo "$ADOPT"; exit 0
+fi
 if [ -n "$ADOPT" ]; then
   if [ "$YES" -ne 1 ]; then echo "would-adopt|#${ADOPT}|${TYPE}|${HOLD}"; exit 0; fi
   URL=$(python3 "$GITHUB_READ" --kind scalar -- issue view "$ADOPT" ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} --json url --jq .url) || exit $?
@@ -201,7 +241,11 @@ fi
 # Repo-wide, any label, any state. An open hit is a duplicate; a closed-only hit
 # is a recurrence — file again, but name the issue that claimed the fix.
 # Exact match on a whitespace-delimited token: `err|sentry|441` must not hit `err|sentry|4411`.
+if [ "$PROVIDER" = azure-devops ]; then
+  ISSUES_JSON=$(forge ticket history) || exit $?
+else
 ISSUES_JSON=$(python3 "$GITHUB_READ" --issue-history "$REPO_NAME") || exit $?
+fi
 HITS=$(printf '%s' "$ISSUES_JSON" | jq -r --arg fp "$FP" '[.[] | select(any(.body | splits("\\s+"); . == $fp))] | sort_by(.state != "OPEN") | map("\(.number) \(.state)") | .[]') || exit 70
 
 OPEN_HIT=$(echo "$HITS" | awk '$2=="OPEN"{print $1; exit}')
@@ -213,9 +257,16 @@ if [ -n "$OPEN_HIT" ]; then
   SEEN=$(state seen "$OPEN_HIT") || exit $?
   if [ "$SEEN" = unchanged ]; then echo "$OPEN_HIT"; exit 0; fi
   state begin "$OPEN_HIT" || exit $?
+  if [ "$PROVIDER" = azure-devops ]; then
+    SEEN_TMP=$(mktemp)
+    { printf 'Seen again by super-collect (%s).\n\n' "$SOURCE"; cat "$BODY_FILE"; echo; } > "$SEEN_TMP"
+    forge ticket comment "$OPEN_HIT" --body-file "$SEEN_TMP" >/dev/null 2>&1 || { rm -f "$SEEN_TMP"; forge halt "Collector comment outcome unknown for #${OPEN_HIT}; reconcile before retrying"; echo "$OPEN_HIT"; exit 79; }
+    rm -f "$SEEN_TMP"
+  else
   gh issue comment "$OPEN_HIT" ${REPO_FLAG[@]+"${REPO_FLAG[@]}"} --body "Seen again by super-collect (${SOURCE}).
 
 $(cat "$BODY_FILE")" >/dev/null 2>&1 || { python3 "$GITHUB_READ" --halt "Collector comment outcome unknown for #${OPEN_HIT}; reconcile before retrying"; echo "$OPEN_HIT"; exit 79; }
+  fi
   state success "$OPEN_HIT" || exit $?
   echo "$OPEN_HIT"; exit 0
 fi
@@ -239,11 +290,20 @@ trap 'rm -f "$BODY_TMP"' EXIT
   if [ -n "$CLOSED_HIT" ]; then
     echo; echo "> Recurrence: this fingerprint was last filed as #${CLOSED_HIT}, which is closed."
   fi
+  if [ "$PROVIDER" = azure-devops ]; then
+    # Visible text: Azure DevOps strips HTML comments from a work item on save.
+    echo; echo "---"; echo
+    echo "- super-collect-fingerprint: ${FP}"
+    echo "- super-collect-source: ${SOURCE}"
+  else
   echo; echo "<!-- super-collect-fingerprint: ${FP} -->"
   echo "<!-- super-collect-source: ${SOURCE} -->"
+  fi
 } > "$BODY_TMP"
 
 ERR=$(mktemp)
+ADO_ARGS=()
+[ "$PROVIDER" != azure-devops ] || ADO_ARGS=(--config "$CONFIG" --column "$HOLD")
 case "$TYPE" in
   refactor)
     OUT=$("$BIN/super-review-file-refactor.sh" --config "$CONFIG" --title "$TITLE" \
@@ -253,7 +313,7 @@ case "$TYPE" in
     OUT=$(SUPER_QA_PROJECT_OWNER="$OWNER" SUPER_QA_PROJECT_TITLE="$PTITLE" \
       SUPER_QA_TARGET_OPTION_NAME="$HOLD" SUPER_QA_ALLOW_WEAK_BODY="$WEAK" SUPER_QA_REPO="$REPO_NAME" \
       "$BIN/super-qa-file-bug.sh" --title "$TITLE" --body-file "$BODY_TMP" --kind "$KIND" \
-      --priority "$PRIORITY" --fingerprint "$FP" ${AREA:+--area "$AREA"} 2>"$ERR"); RC=$? ;;
+      --priority "$PRIORITY" --fingerprint "$FP" ${AREA:+--area "$AREA"} ${ADO_ARGS[@]+"${ADO_ARGS[@]}"} 2>"$ERR"); RC=$? ;;
 esac
 cat "$ERR" >&2; rm -f "$ERR"
 N=$(echo "$OUT" | tail -1)

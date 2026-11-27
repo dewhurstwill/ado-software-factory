@@ -29,6 +29,14 @@ What `fix` does, with NO question (all of it backed up first to
 It never installs a system tool or signs in: those come back in `needs` with the exact
 command for this OS, for onboard to ask about.
 
+Azure DevOps (a config with "provider": "azure-devops"): `gh` is not required; a token is
+(AZURE_DEVOPS_EXT_PAT in the environment or the project's .env, or a working `az login`; `az`
+itself is optional). `check` validates the config's `ado` block (organization URL, project, team,
+board, repository, approvers), reads the board with `super-board-forge.py board ensure --check`
+(`fix` runs `board ensure`), and reports an empty Azure Repos repository (no branch, so no pull
+request can be opened) as a must-fix with the exact git commands. The three routing labels are
+tags and need no creation. The forge runs with a throwaway halt file: a check never halts a run.
+
 `board-migrate` is the board half (needs `gh` with project scope): adds the missing
 Status options (--prune-empty also drops unused extras such as a new board's Todo),
 creates the three labels, maps old type labels, labels every card `qa`
@@ -48,6 +56,8 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import tempfile
+import urllib.parse
 import datetime as dt
 import glob
 import json
@@ -292,6 +302,130 @@ def migrate_config(cfg, host=None):
 
 # ── check / fix ────────────────────────────────────────────────────────────────
 
+# ── Azure DevOps ───────────────────────────────────────────────────────────────
+
+ADO_PAT_VAR = "AZURE_DEVOPS_EXT_PAT"
+ADO_RESOURCE = "499b84ac-1321-427f-aa17-267ca6975798"
+
+
+def provider_of(cfg):
+    return cfg.get("provider", "github") if isinstance(cfg, dict) else "github"
+
+
+def validate_ado(cfg):
+    """Problems with the config's `ado` block, as plain sentences (empty when fine)."""
+    ado = cfg.get("ado")
+    if not isinstance(ado, dict):
+        return ['"ado" block missing: add {"organization": "https://dev.azure.com/<org>", "project": "<name>"}']
+    errors = []
+    org = ado.get("organization")
+    parsed = urllib.parse.urlparse(org) if isinstance(org, str) else None
+    if not (parsed and parsed.scheme in ("http", "https") and parsed.netloc):
+        errors.append('ado.organization must be the organization URL, e.g. "https://dev.azure.com/<org>"')
+    if not (isinstance(ado.get("project"), str) and ado["project"].strip()):
+        errors.append("ado.project must be the Azure DevOps project name")
+    for key in ("team", "board", "repository"):
+        if key in ado and not (isinstance(ado[key], str) and ado[key].strip()):
+            errors.append(f"ado.{key} must be a non-empty string (or leave it out for the default)")
+    if "approvers" in ado and not (isinstance(ado["approvers"], list)
+                                   and all(isinstance(a, str) and a.strip() for a in ado["approvers"])):
+        errors.append('ado.approvers must be a list of unique names, e.g. ["user@example.com"]')
+    for key in ("work_item_types", "body_fields"):
+        if key in ado and not (isinstance(ado[key], dict)
+                               and all(isinstance(k, str) and isinstance(v, str) for k, v in ado[key].items())):
+            errors.append(f"ado.{key} must map names to names (strings)")
+    return errors
+
+
+def ado_token_source(root, cfg):
+    """Where a usable Azure DevOps credential comes from, or '' when there is none. `az` is optional."""
+    if os.environ.get(ADO_PAT_VAR, "").strip():
+        return "environment"
+    for base in dict.fromkeys([(cfg.get("repo") or {}).get("path") or "", root]):
+        if not base:
+            continue
+        text = read(os.path.join(base, ".env"))
+        for line in text.splitlines():
+            m = re.match(rf"\s*(?:export\s+)?{ADO_PAT_VAR}\s*=\s*(.*?)\s*$", line)
+            if m and m.group(1).strip("\"'"):
+                return ".env"
+    az = shutil.which("az")
+    if az:
+        try:
+            r = subprocess.run([az, "account", "get-access-token", "--resource", ADO_RESOURCE, "--query", "accessToken",
+                                "-o", "tsv"], capture_output=True, text=True, timeout=30)
+            if r.returncode == 0 and r.stdout.strip():
+                return "az login"
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return ""
+
+
+def forge_run(root, config_path, *args):
+    """super-board-forge.py beside this script, on a throwaway halt file: a setup check must neither
+    be stopped by a run's halt nor start one. (returncode, stdout, stderr)."""
+    scratch = tempfile.mkdtemp(prefix="sb-setup-")
+    env = dict(os.environ, SB_GITHUB_HALT_FILE=os.path.join(scratch, "halt.json"), SB_REPO_PATH=root)
+    try:
+        r = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "super-board-forge.py"),
+                            "--config", config_path, *args], capture_output=True, text=True, encoding="utf-8",
+                           env=env, cwd=root, timeout=180, stdin=subprocess.DEVNULL)
+        return r.returncode, r.stdout, r.stderr
+    except (OSError, subprocess.SubprocessError) as error:
+        return 69, "", str(error)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def empty_repo_fix(cfg, name):
+    base = cfg.get("base_branch") or "main"
+    return (f"The Azure Repos repository \"{name}\" has no branch (a new repository has no commits and no default "
+            f"branch), and a pull request cannot be opened until the base branch \"{base}\" exists. Fix: from your clone run "
+            f"`git checkout -b {base} && git commit --allow-empty -m \"Initial commit\" && git push -u origin {base}` "
+            f"(or, if the clone already has commits, `git push -u origin HEAD:{base}`; or use Initialize on the repository's "
+            f"Files page), then re-run this check.")
+
+
+def check_ado(root, config_path, cfg, network=True):
+    """One azure-devops config: {errors, credentials, board, repository, fix}. `errors` are the red
+    items (each a sentence); `board` the `needed:` lines of `board ensure --check`; nothing is written."""
+    out = {"errors": validate_ado(cfg), "credentials": "", "board": [], "repository": None, "fix": []}
+    if out["errors"]:
+        return out
+    out["credentials"] = ado_token_source(root, cfg)
+    if not out["credentials"]:
+        out["errors"].append("no Azure DevOps credentials: set AZURE_DEVOPS_EXT_PAT in the environment or in the project's "
+                             ".env, or run `az login`")
+        return out
+    if not network:
+        return out
+    code, stdout, stderr = forge_run(root, config_path, "board", "ensure", "--check")
+    needed = [l[len("needed: "):] for l in stdout.splitlines() if l.startswith("needed: ")]
+    if code == 1 and needed:
+        out["board"] = needed
+        out["errors"].append("the board needs changes: " + "; ".join(needed))
+        out["fix"].append("board")
+    elif code != 0:
+        why = (stderr.strip().splitlines() or ["no detail"])[-1][:300]
+        out["errors"].append(f"cannot check the Azure DevOps board (exit {code}): {why}")
+    code, stdout, stderr = forge_run(root, config_path, "repository")
+    if code == 0:
+        try:
+            repo = json.loads(stdout)
+        except ValueError:
+            repo = None
+        out["repository"] = repo
+        if isinstance(repo, dict) and repo.get("empty"):
+            out["errors"].append(empty_repo_fix(cfg, repo.get("repository") or "?"))
+        elif isinstance(repo, dict) and repo.get("base") and repo.get("baseExists") is False:
+            out["errors"].append(f"the base branch \"{repo['base']}\" does not exist in the repository; push it "
+                                 f"(`git push -u origin {repo['base']}`) or change base_branch in the config")
+    else:
+        why = (stderr.strip().splitlines() or ["no detail"])[-1][:300]
+        out["errors"].append(f"cannot read the Azure Repos repository (exit {code}): {why}")
+    return out
+
+
 def installed_version(root):
     return read(os.path.join(root, ".claude", "skills", "super-board", "VERSION")) or None
 
@@ -315,8 +449,14 @@ def check(root, pack, host="claude", home=None, catalog=None):
     configs = {}
     verification = {}
     host_errors = {}
+    ado_configs = {}
+    other_providers = False
     for p in sorted(glob.glob(os.path.join(claude, "super-board", "configs", "*.json"))):
         cfg = load_json(p)
+        if isinstance(cfg, dict) and provider_of(cfg) == "azure-devops":
+            ado_configs[os.path.relpath(p, root)] = (p, cfg)
+        else:
+            other_providers = True
         ready = subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__),
                                 "super-board-verification-ready.py"), "--config", p],
                                capture_output=True, text=True)
@@ -336,7 +476,10 @@ def check(root, pack, host="claude", home=None, catalog=None):
     from_v = upgrade_rec.get("from") or (have_v if have_v and pack_version and vtuple(have_v) < vtuple(pack_version) else None)
     fam = os_family()
     needs = []
+    gh_needed = other_providers or not ado_configs  # no config yet: GitHub is the default provider
     for t in ("git", "gh", "jq", "node"):
+        if t == "gh" and not gh_needed:
+            continue
         if not have(t if t != "node" else "npx"):
             why, cmds = TOOLS[t]
             cmd = cmds[fam]
@@ -358,13 +501,18 @@ def check(root, pack, host="claude", home=None, catalog=None):
         ok.append("required worker skills resolved for " + host)
     if security_audit:
         ok.append("security-audit skill installed (optional, run on demand)")
-    red = bool(missing or old_dirs or configs or verification or host_errors or not git or needs or not helpers)
+    ado = {rel: check_ado(root, p, cfg) for rel, (p, cfg) in ado_configs.items()}
+    for rel, report in ado.items():
+        if not report["errors"]:
+            ok.append(f"Azure DevOps ready: {rel} (credentials from {report['credentials']}, board, repository)")
+    ado_red = any(report["errors"] for report in ado.values())
+    red = bool(missing or old_dirs or configs or verification or host_errors or not git or needs or not helpers or ado_red)
     return {
         "root": root, "pack": pack, "pack_version": pack_version, "installed_version": have_v,
         "upgrade": older, "from": from_v or ("older" if older else None),
         "added_skills": upgrade_rec.get("added_skills", []),
         "missing": missing, "old_dirs": old_dirs, "configs": configs, "verification": verification,
-        "host_errors": host_errors, "git": git,
+        "host_errors": host_errors, "ado": ado, "git": git,
         "helper_skills": helpers, "security_audit": security_audit, "helper_readiness": readiness, "needs": needs, "os": fam, "ok": ok, "green": not red,
     }
 
@@ -465,6 +613,20 @@ def fix(root, pack, helpers=True, dry=False, host="claude", home=None, catalog=N
         else:
             notes.append("would install the optional security-audit skill")
 
+    for rel, report in before.get("ado", {}).items():
+        if "board" not in report["fix"]:
+            continue
+        if dry:
+            notes.append(f"would run `board ensure` for {rel}: " + "; ".join(report["board"]))
+            continue
+        code, stdout, stderr = forge_run(root, os.path.join(root, rel), "board", "ensure")
+        if code == 0:
+            fixed.append(f"Azure DevOps board set up for {rel}: " + "; ".join(
+                l[len("changed: "):] for l in stdout.splitlines() if l.startswith("changed: ")))
+        else:
+            notes.append(f"`board ensure` for {rel} did not apply (exit {code}): "
+                         + (stderr.strip().splitlines() or ["no detail"])[-1][:300])
+
     if not dry:
         up = os.path.join(claude, "super-board", "upgrade.json")
         if os.path.exists(up):
@@ -499,6 +661,8 @@ def text_report(res):
         lines.append("  ✗ " + res["helper_readiness"]["error"])
     for path, error in {**res.get("verification", {}), **res.get("host_errors", {})}.items():
         lines.append(f"  ✗ {path}: {error}")
+    for path, report in res.get("ado", {}).items():
+        lines += [f"  ✗ {path}: {e}" for e in report["errors"]]
     for n in res.get("needs", []):
         lines.append(f"  Needs your machine: {n['name']} isn't installed. It's needed for {n['why']}.")
         lines.append(f"    {n['command']}")
