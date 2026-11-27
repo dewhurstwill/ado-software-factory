@@ -62,7 +62,9 @@ fi
 if [ "$MODE" = "time" ]; then
   TZV=""
   [ -n "$CONFIG" ] && [ -r "$CONFIG" ] && TZV=$(jq -r '.timezone // empty' "$CONFIG" 2>/dev/null)
-  if [ -n "$TZV" ]; then TZ="$TZV" date '+%b %e, %H:%M %Z' | sed 's/  */ /g'
+  # UTC by name: Git Bash has no zoneinfo and would print GMT (other zone names need tzdata there).
+  if [ "$TZV" = UTC ] || [ "$TZV" = Etc/UTC ]; then date -u '+%b %e, %H:%M UTC' | sed 's/  */ /g'
+  elif [ -n "$TZV" ]; then TZ="$TZV" date '+%b %e, %H:%M %Z' | sed 's/  */ /g'
   else date '+%b %e, %H:%M %Z' | sed 's/  */ /g'; fi
   exit 0
 fi

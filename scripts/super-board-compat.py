@@ -29,13 +29,6 @@ import sys
 
 WINDOWS = os.name == 'nt'
 
-if WINDOWS and 'glob' not in os.environ.get('MSYS', ''):
-    # A Git Bash started from a Windows program globs and brace-expands its command
-    # line: a JSON argument {"a":1,"b":2} would arrive as two words. noglob stops that
-    # for every bash this process starts (super-board-compat.sh exports it too).
-    os.environ['MSYS'] = (os.environ.get('MSYS', '') + ' noglob').strip()
-
-
 class ToolMissing(FileNotFoundError):
     """The named tool is not on PATH (or the given path does not exist)."""
 
@@ -159,12 +152,42 @@ def argv_for(argv: list[str]) -> list[str]:
     return tool(argv[0]) + argv[1:]
 
 
+def is_msys(exe: str) -> bool:
+    """A Git Bash / MSYS2 / Cygwin program (bash.exe, the usr/bin tools), on Windows."""
+    if not WINDOWS:
+        return False
+    if os.path.basename(exe).lower() in ('bash.exe', 'sh.exe', 'bash', 'sh'):
+        return True
+    folder = os.path.dirname(exe)
+    return any(os.path.isfile(os.path.join(folder, dll)) for dll in ('msys-2.0.dll', 'cygwin1.dll'))
+
+
+def _msys_quote(arg: str) -> str:
+    """One argument for an MSYS command line, in double quotes. Inside them MSYS reads a
+    backslash as an escape for the next character (C:\\x would lose it), so every
+    backslash and every double quote gets one."""
+    return '"' + arg.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
+def command_line(argv):
+    """What to hand subprocess for argv: the list itself, except for an MSYS program on Windows.
+
+    An MSYS program started by a Windows process parses its own command line and globs
+    and brace-expands every word that is not inside double quotes. subprocess quotes only
+    words with spaces, so a JSON argument {"a":1,"b":2} would arrive split in two with its
+    quotes gone. For those programs every word is quoted; nothing else changes.
+    """
+    if argv and is_msys(str(argv[0])):
+        return ' '.join(_msys_quote(str(a)) for a in argv)
+    return argv
+
+
 def run(argv, **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(argv_for(argv), **kwargs)
+    return subprocess.run(command_line(argv_for(argv)), **kwargs)
 
 
 def popen(argv, **kwargs) -> subprocess.Popen:
-    return subprocess.Popen(argv_for(argv), **kwargs)
+    return subprocess.Popen(command_line(argv_for(argv)), **kwargs)
 
 
 def group_kwargs() -> dict:

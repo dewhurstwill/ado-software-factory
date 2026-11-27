@@ -114,8 +114,11 @@ printf '%s\n' "$out" | grep -q '^🧠 helper skills: installed$' || fail "helper
 T="$WORK/t9"; mkdir -p "$T"
 # /usr/bin can contain node on Linux. Keep only the tools this install uses.
 NOBIN="$WORK/bin-nonode"; mkdir -p "$NOBIN"
-for t in bash id curl tar gzip python3 mktemp mkdir rm dirname tr cp ln chmod grep basename sed gh jq; do
-  ln -s "$(command -v "$t")" "$NOBIN/$t"
+# type -P: the file, never a shell function (on Windows python3/jq are compat shims).
+for t in bash id curl tar gzip python3 mktemp mkdir rm dirname tr cp ln chmod grep basename sed gh jq ${SB_WINDOWS:+cygpath}; do
+  p=$(type -P "$t" || true)
+  [ "$t" != python3 ] || p=${SB_PYTHON:-$p}
+  ln -s "$p" "$NOBIN/$t"
 done
 out=$(PATH="$NOBIN" bash "$GET" --target "$T" 2>&1) || fail "install without node failed: $out"
 printf '%s\n' "$out" | grep -q '✗ node' || fail "missing node should be marked ✗: $out"

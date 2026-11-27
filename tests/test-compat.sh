@@ -100,6 +100,10 @@ assert c.resolve('exe') == [os.path.join(d, 'exe.exe')], '.exe beats a script'
 assert c.resolve('plain') is None and c.resolve('nothing') is None
 assert c.resolve('bash') == [sys.executable], 'bash is Git Bash, never System32'
 assert c.resolve(os.path.join(d, 'pyfake'))[0] == sys.executable
+# An MSYS program gets every word quoted (it globs and brace-expands bare words itself).
+assert c.command_line([sys.executable, '{"a":1}']) == [sys.executable, '{"a":1}'], 'a native program keeps the list'
+line = c.command_line(['C:/Git/usr/bin/bash.exe', 'x.sh', '{"a":1,"b":2}', 'c:\\d\\', 'p q'])
+assert line == '"C:/Git/usr/bin/bash.exe" "x.sh" "{\\"a\\":1,\\"b\\":2}" "c:\\\\d\\\\" "p q"', line
 try:
     c.tool('nothing'); raise SystemExit('tool() must raise')
 except c.ToolMissing as e:

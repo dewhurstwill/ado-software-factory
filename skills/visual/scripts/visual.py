@@ -356,7 +356,7 @@ def link_sources(data: dict, repo: Path, src_root: Path, base: str) -> int:
             n += c
     if isinstance(data.get("source"), str) and not data["source"].startswith("~"):
         try:
-            data["source"] = (repo / data["source"]).resolve().relative_to(src_root).as_posix()
+            data["source"] = (repo / data["source"]).resolve().relative_to(src_root.resolve()).as_posix()
         except ValueError:
             pass
     data["sourcesBase"] = ""

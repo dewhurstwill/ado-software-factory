@@ -113,13 +113,7 @@ class Ping(Base):
         self.assertNotIn("t0k", json.dumps(r))
 
     def test_cli_ok(self):
-        # A native CLI, so the argv reaches it as given on every OS (an MSYS printf on
-        # Windows re-parses quotes in its command line).
-        emit = os.path.join(self.tmp, "emit.py")
-        with open(emit, "w", encoding="utf-8") as f:
-            f.write('print(\'{"items":[{"id":1,"title":"boom"}]}\')\n')
-        import shlex
-        code, r = run(["ping", "--kind", "cli", "--target", f"{shlex.quote(sys.executable)} {shlex.quote(emit)}", "--name", "logs"])
+        code, r = run(["ping", "--kind", "cli", "--target", 'printf \'{"items":[{"id":1,"title":"boom"}]}\'', "--name", "logs"])
         self.assertEqual((code, r["status"], r["count"]), (0, "ok", 1))
         self.assertEqual(r["sample"][0]["title"], "boom")
 

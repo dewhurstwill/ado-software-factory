@@ -68,7 +68,7 @@ def run_locked(fd, key, lock_path, args):
     if args[0].endswith('.sh'):
         args = [*gh.compat.tool('bash'), *args]
     try:
-        return subprocess.call(args, env=env)
+        return subprocess.call(gh.compat.command_line(args), env=env)
     finally:
         token_path.unlink(missing_ok=True)
 

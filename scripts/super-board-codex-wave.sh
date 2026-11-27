@@ -155,7 +155,7 @@ def grade(card):
             if halted.is_set():
                 return None, True
             try:
-                process = subprocess.Popen(compat.argv_for(command), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                process = subprocess.Popen(compat.command_line(compat.argv_for(command)), stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                            text=True, **compat.group_kwargs())
             except OSError:
                 return None, False
@@ -202,9 +202,9 @@ def run_card(card):
             process = None
             lock = inflight / str(card['number'])
             try:
-                process = subprocess.Popen(compat.tool('bash') + [str(launcher), '--backend', 'codex', '--config', str(config_path),
+                process = subprocess.Popen(compat.command_line(compat.tool('bash') + [str(launcher), '--backend', 'codex', '--config', str(config_path),
                                             '--card', json.dumps(current), '--lane', lane, codex[0],
-                                            '--tier', args.tier] + (['--complexity', complexity] if complexity else []),
+                                            '--tier', args.tier] + (['--complexity', complexity] if complexity else [])),
                                            stdout=subprocess.PIPE, text=True, **compat.group_kwargs())
                 active.add(process)
                 lock.write_text(f'PID={process.pid}\nLANE={lane}\nSTARTED={time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}\n')

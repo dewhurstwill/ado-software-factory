@@ -134,7 +134,9 @@ node "$SHOOT" >/dev/null 2>&1; is "shoot usage error exits 1" 1 $?
 HELP=$(node --input-type=module -e "
 import { parseThemes, pairNames } from '$SHOOT_URL';
 let bad = 'no-throw'; try { parseThemes('sepia') } catch { bad = 'throws' }
-console.log(JSON.stringify([parseThemes(), parseThemes('dark'), bad, pairNames('/r/round-3-main-mobile-dark.png', 'round-3', 'round-0')]))")
+const pair = pairNames('/r/round-3-main-mobile-dark.png', 'round-3', 'round-0')
+for (const k in pair) pair[k] = pair[k].split(String.fromCharCode(92)).join('/')  // Windows joins with backslashes
+console.log(JSON.stringify([parseThemes(), parseThemes('dark'), bad, pair]))")
 is "shoot themes + compare names" '[["light","dark"],["dark"],"throws",{"before":"/r/round-0-main-mobile-dark.png","sheet":"/r/cmp-round-3-main-mobile-dark.png"}]' "$HELP"
 
 # 7 — pr-shots.sh: copies round-0 + final shots onto the branch, commits, prints raw-URL table.

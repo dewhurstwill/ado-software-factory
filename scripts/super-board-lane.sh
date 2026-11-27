@@ -242,7 +242,7 @@ with tempfile.TemporaryDirectory(prefix=f'super-board-{backend.name}-') as tempo
     run['schema_path'].write_text(json.dumps(schema))
     command, stdin = backend.command(run)
     try:
-        child = subprocess.Popen(compat.argv_for(command), stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+        child = subprocess.Popen(compat.command_line(compat.argv_for(command)), stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
                                  stdout=subprocess.PIPE if backend.capture_stdout else sys.stderr, text=True)
         stdout, _ = child.communicate(stdin)
         require_verification_ready()

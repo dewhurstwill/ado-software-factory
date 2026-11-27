@@ -69,6 +69,11 @@ def _load_compat():
 _COMPAT = _load_compat()
 
 
+def command_line(argv):
+    """Windows: an MSYS program (a shell-script gh) needs every argument quoted (compat)."""
+    return _COMPAT.command_line(argv) if _COMPAT is not None else argv
+
+
 def tool_argv(name):
     """argv prefix for a tool. Windows: gh.cmd, or a shell-script gh, through compat."""
     if _COMPAT is not None:
@@ -97,7 +102,7 @@ GIT_ENV.update(
 
 def git(cwd, *args, timeout=60):
     try:
-        r = subprocess.run(tool_argv("git") + ["-C", cwd] + list(args), capture_output=True, text=True,
+        r = subprocess.run(command_line(tool_argv("git") + ["-C", cwd] + list(args)), capture_output=True, text=True,
                            encoding="utf-8", errors="replace", env=GIT_ENV, timeout=timeout)
         return r.returncode, r.stdout.strip(), r.stderr.strip()
     except (subprocess.TimeoutExpired, OSError) as e:
@@ -308,7 +313,7 @@ def pull_requests(cwd):
 
     def gh(*args):
         try:
-            r = subprocess.run(tool_argv(exe) + list(args), cwd=cwd, capture_output=True, text=True,
+            r = subprocess.run(command_line(tool_argv(exe) + list(args)), cwd=cwd, capture_output=True, text=True,
                                encoding="utf-8", errors="replace", env=env, timeout=15)
             return json.loads(r.stdout or "[]") if r.returncode == 0 else None
         except (OSError, ValueError, subprocess.TimeoutExpired):

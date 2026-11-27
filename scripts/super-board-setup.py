@@ -358,10 +358,10 @@ def ado_token_source(root, cfg):
                 m = re.match(rf"\s*(?:export\s+)?{ADO_PAT_VAR}\s*=\s*(.*?)\s*$", line)
                 if m and m.group(1).strip("\"'"):
                     return name
-    az = shutil.which("az")
+    az = compat.resolve("az")  # az.cmd, or a #! script through Git Bash
     if az:
         try:
-            r = subprocess.run([az, "account", "get-access-token", "--resource", ADO_RESOURCE, "--query", "accessToken",
+            r = subprocess.run([*az, "account", "get-access-token", "--resource", ADO_RESOURCE, "--query", "accessToken",
                                 "-o", "tsv"], capture_output=True, text=True, timeout=30)
             if r.returncode == 0 and r.stdout.strip():
                 return "az login"
@@ -498,21 +498,21 @@ def check(root, pack, host="claude", home=None, catalog=None):
     for p in sorted(glob.glob(os.path.join(claude, "super-board", "configs", "*.json"))):
         cfg = load_json(p)
         if isinstance(cfg, dict) and provider_of(cfg) == "azure-devops":
-            ado_configs[os.path.relpath(p, root)] = (p, cfg)
+            ado_configs[os.path.relpath(p, root).replace(os.sep, "/")] = (p, cfg)
         else:
             other_providers = True
         ready = subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__),
                                 "super-board-verification-ready.py"), "--config", p],
                                capture_output=True, text=True)
         if ready.returncode:
-            verification[os.path.relpath(p, root)] = ready.stderr.strip()
+            verification[os.path.relpath(p, root).replace(os.sep, "/")] = ready.stderr.strip()
         if isinstance(cfg, dict):
             if "host" in cfg and cfg["host"] not in HOSTS:
-                host_errors[os.path.relpath(p, root)] = (
+                host_errors[os.path.relpath(p, root).replace(os.sep, "/")] = (
                     f"host \"{cfg['host']}\" must be one of {', '.join(HOSTS)}")
             _, ch = migrate_config(cfg, host)
             if ch:
-                configs[os.path.relpath(p, root)] = ch
+                configs[os.path.relpath(p, root).replace(os.sep, "/")] = ch
     older = bool(upgrade_rec.get("from")) or bool(old_dirs) or any(
         "variant" in " ".join(ch) or "Skipped" in " ".join(ch) or "collect:" in " ".join(ch) for ch in configs.values())
     if have_v and pack_version and vtuple(have_v) < vtuple(pack_version):

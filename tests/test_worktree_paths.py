@@ -39,7 +39,7 @@ class WorktreePaths(unittest.TestCase):
         bin_dir.mkdir()
         for name, body in {
             "gh": '#!/bin/sh\nprintf \'%s\\n\' \'{"number":9,"title":"fixture","body":"offline","labels":[]}\'\n',
-            "claude": '#!/bin/sh\ncat >/dev/null\npwd -P > "$WORKER_CWD"\ngit commit -q --allow-empty -m "chore(loop): close #9"\n',
+            "claude": '#!/bin/sh\ncat >/dev/null\n{ pwd -W 2>/dev/null || pwd -P; } > "$WORKER_CWD"\ngit commit -q --allow-empty -m "chore(loop): close #9"\n',
         }.items():
             path = bin_dir / name
             path.write_text(body)
@@ -61,8 +61,9 @@ class WorktreePaths(unittest.TestCase):
         self.stub_workers()
         result = self.dispatch()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(Path(self.env["WORKER_CWD"]).read_text().strip(),
-                         str(self.root / ".claude/worktrees/issue-9"))
+        # Path equality: Git Bash's pwd -W prints C:/x where Python has C:\\x.
+        self.assertEqual(Path(Path(self.env["WORKER_CWD"]).read_text().strip()),
+                         self.root / ".claude/worktrees/issue-9")
         self.assertFalse((self.root / ".worktrees").exists())
 
     def test_legacy_checkout_is_not_abandoned_or_clobbered(self):

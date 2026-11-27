@@ -56,21 +56,25 @@ run_limited() {
   "$@" </dev/null &
   pid=$!
   set +m
+  # The watchdog writes nothing to the suite's output, so a sleep it leaves behind can
+  # never hold a $(…) or pipe open, and it is not waited for once the suite is done
+  # (a signal can be slow to reach a waiting MSYS bash).
   (
+    trap 'kill "$sp" 2>/dev/null; exit 0' TERM
     sleep "$limit" &
     sp=$!
-    trap 'kill "$sp" 2>/dev/null; exit 0' TERM
     wait "$sp"
     : > "$marker"
-    echo "::error::timed out after ${limit}s; stopping the suite" >&2
     kill_tree "$pid"
-  ) &
+  ) </dev/null >/dev/null 2>&1 &
   wd=$!
   wait "$pid"
   rc=$?
   kill -TERM "$wd" 2>/dev/null || true
-  wait "$wd" 2>/dev/null || true
-  if [ -e "$marker" ]; then rc=124; rm -f "$marker"; fi
+  if [ -e "$marker" ]; then
+    rc=124; rm -f "$marker"
+    echo "::error::timed out after ${limit}s; stopped the suite" >&2
+  fi
   return "$rc"
 }
 

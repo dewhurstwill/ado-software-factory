@@ -38,6 +38,16 @@ sbtest_pysite() {
 }
 sbtest_pysite
 
+# A suite under set -e that stops on a failing command says where (otherwise it exits
+# silently). Only reports: the exit itself is unchanged.
+_sbtest_err() {
+  local rc=$? where="${BASH_SOURCE[1]##*/}:${BASH_LINENO[0]}"
+  case $- in *e*) echo "[sbtest] $where: command failed (exit $rc): ${BASH_COMMAND}" >&2 ;; esac
+  return 0
+}
+set -o errtrace
+trap _sbtest_err ERR
+
 fake_tool() {
   local dir="$1" name="$2" body first
   body=$(cat; printf x)

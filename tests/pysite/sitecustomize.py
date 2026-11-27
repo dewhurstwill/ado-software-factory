@@ -36,7 +36,7 @@ if os.name == 'nt':
                     os.path.isfile(first) and os.path.splitext(first)[1].lower() not in ('.exe', '.com', '.bat', '.cmd')):
                 found = _compat.resolve(first)
                 if found:
-                    args = [*found, *args[1:]]
+                    args = _compat.command_line([*found, *args[1:]])
         _popen_init(self, args, *rest, **kwargs)
 
     subprocess.Popen.__init__ = _git_bash_init

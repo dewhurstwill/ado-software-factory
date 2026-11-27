@@ -86,7 +86,7 @@ const warnings = []
 // inside scripts/, and normalise to {layout, skillDir, detect, context}.
 // Windows: C:/x/y, which Git Bash runs as is (C:\\x\\y would need quoting).
 const slash = (p) => (process.platform === 'win32' ? p.replace(/\\/g, '/') : p)
-const sh = (q) => { const p = slash(q); return (/^[\w@%+=:,./-]+$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`) }
+const sh = (q) => { const p = slash(q); return (/^[\w@%+=:,./-][\w@%+=:,./~-]*$/.test(p) ? p : `'${p.replace(/'/g, `'\\''`)}'`) }
 const resolveImpeccable = (p) => {
   if (!p) return null
   let dir = path.resolve(p)
