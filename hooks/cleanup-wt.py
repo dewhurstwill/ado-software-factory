@@ -24,7 +24,14 @@ CLEANUP_WT_BASES="a,b" overrides detection like repeated --base.
 
 A branch is merged when its tip is an ancestor of a base, every patch is already in a
 base (git cherry), one commit equal to the whole branch is in a base (squash probe), or
-gh reports a merged PR at that tip. Bases, master/main and the branch checked out in the
+gh reports a merged PR at that tip.
+
+Azure DevOps: when the project config (SB_CONFIG, else .claude/super-board/active ->
+configs/<slug>.json, else the only config) says "provider": "azure-devops", the same two facts
+come from the forge (`super-board-forge.py pr refs`, in .claude/bin or .agents/bin; override
+with CLEANUP_WT_FORGE) instead of `gh`. A PR counts as merged there only when its status is
+completed AND the recorded source head EQUALS the local branch tip (not merely contains it).
+When the forge cannot be asked, remote branches are kept and the note says so. Bases, master/main and the branch checked out in the
 main checkout are never touched, nor is the worktree this runs in.
 
 Every run writes <git-common-dir>/cleanup-wt/<timestamp>.tsv before acting:
@@ -36,15 +43,49 @@ Adapted from BookKeepingApp's cleanup-wt (Eric Tech), generalised for any repo.
 import datetime
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
+
+
+def _load_compat():
+    """super-board-compat.py from the installed bin/ (or the pack's scripts/), else None."""
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    for folder in ("bin", "scripts"):
+        path = os.path.join(os.path.dirname(here), folder, "super-board-compat.py")
+        if os.path.isfile(path):
+            spec = importlib.util.spec_from_file_location("sb_compat", path)
+            module = importlib.util.module_from_spec(spec)
+            try:
+                spec.loader.exec_module(module)
+                return module
+            except Exception:  # a broken helper must not break the hook
+                return None
+    return None
+
+
+_COMPAT = _load_compat()
+
+
+def command_line(argv):
+    """Windows: an MSYS program (a shell-script gh) needs every argument quoted (compat)."""
+    return _COMPAT.command_line(argv) if _COMPAT is not None else argv
+
+
+def tool_argv(name):
+    """argv prefix for a tool. Windows: gh.cmd, or a shell-script gh, through compat."""
+    if _COMPAT is not None:
+        return _COMPAT.resolve(name) or [name]
+    return [name]
 
 KEEP, REMOVE, REVIEW = "KEEP", "REMOVE", "REVIEW"
 ALLOWED_DIR = os.path.join(".claude", "worktrees")
 FRESH_SECS = 24 * 3600
 ALWAYS_PROTECTED = {"main", "master", "HEAD"}
 EXTRA_BASES = ["staging", "develop", "dev"]
+FORGE_NAME = "gh"  # who answers "which PRs are open or merged"; "Azure DevOps" on that provider
 
 # Drop GIT_DIR and friends (inherited from a git hook they would redirect every
 # `git -C`), never prompt, and give the squash probe's commit-tree an identity.
@@ -61,8 +102,8 @@ GIT_ENV.update(
 
 def git(cwd, *args, timeout=60):
     try:
-        r = subprocess.run(["git", "-C", cwd] + list(args), capture_output=True, text=True,
-                           env=GIT_ENV, timeout=timeout)
+        r = subprocess.run(command_line(tool_argv("git") + ["-C", cwd] + list(args)), capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", env=GIT_ENV, timeout=timeout)
         return r.returncode, r.stdout.strip(), r.stderr.strip()
     except (subprocess.TimeoutExpired, OSError) as e:
         return 1, "", str(e)
@@ -74,7 +115,7 @@ def git_out(cwd, *args):
 
 
 def real(p):
-    return os.path.realpath(p) if os.path.exists(p) else p
+    return os.path.realpath(p) if os.path.exists(p) else os.path.normpath(p)  # C:/x and C:\x alike
 
 
 # ---- facts ------------------------------------------------------------------
@@ -147,8 +188,9 @@ def base_refs(cwd, names):
     return found
 
 
-def merged_state(cwd, tip, bases, merged_pr_oids=()):
-    """How tip reached a base, cheapest check first; None when it did not."""
+def merged_state(cwd, tip, bases, merged_pr_oids=(), exact=False):
+    """How tip reached a base, cheapest check first; None when it did not. `exact`: a PR's recorded
+    head only counts when it EQUALS the tip (Azure DevOps); otherwise a tip that is an ancestor of it counts."""
     for b in bases:
         if git(cwd, "merge-base", "--is-ancestor", tip, b["sha"])[0] == 0:
             return "ancestor of " + b["name"]
@@ -164,19 +206,115 @@ def merged_state(cwd, tip, bases, merged_pr_oids=()):
         if probe and (git_out(cwd, "cherry", b["sha"], probe) or "").startswith("-"):
             return "squash-merged into " + b["name"]
     for oid in merged_pr_oids:
-        if oid == tip or git(cwd, "merge-base", "--is-ancestor", tip, oid)[0] == 0:
-            return "PR merged on GitHub"
+        if oid == tip or (not exact and git(cwd, "merge-base", "--is-ancestor", tip, oid)[0] == 0):
+            return "PR completed on Azure DevOps" if exact else "PR merged on GitHub"
     return None
+
+
+def project_root(cwd):
+    """The main checkout holding .claude/, from any worktree of it."""
+    common = git_out(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    if common and os.path.basename(common.rstrip("/\\")) == ".git":
+        return os.path.dirname(common.rstrip("/\\"))
+    return git_out(cwd, "rev-parse", "--show-toplevel") or cwd
+
+
+def ado_config(root):
+    """(config path, config) when the project's super-board config says azure-devops, else None."""
+    def load(path):
+        try:
+            with open(path, encoding="utf-8") as fh:
+                value = json.load(fh)
+            return value if isinstance(value, dict) else None
+        except (OSError, ValueError):
+            return None
+
+    path = os.environ.get("SB_CONFIG") or ""
+    if not (path and os.path.isfile(path)):
+        base = os.path.join(root, ".claude", "super-board")
+        slug = ""
+        try:
+            with open(os.path.join(base, "active"), encoding="utf-8") as fh:
+                slug = fh.read().strip()
+        except OSError:
+            pass
+        path = os.path.join(base, "configs", slug + ".json") if slug else ""
+        if not (path and os.path.isfile(path)):
+            found = sorted(f for f in (os.listdir(os.path.join(base, "configs")) if os.path.isdir(os.path.join(base, "configs")) else [])
+                           if f.endswith(".json"))
+            path = os.path.join(base, "configs", found[0]) if len(found) == 1 else ""
+    cfg = load(path) if path else None
+    return (path, cfg) if cfg and cfg.get("provider") == "azure-devops" else None
+
+
+def find_forge(root):
+    here = os.path.dirname(os.path.abspath(__file__))
+    cands = [os.environ.get("CLEANUP_WT_FORGE") or "",
+             os.path.join(root, ".claude", "bin", "super-board-forge.py"),
+             os.path.join(root, ".agents", "bin", "super-board-forge.py"),
+             os.path.join(here, "..", "bin", "super-board-forge.py"),
+             os.path.join(os.path.dirname(real(os.path.abspath(__file__))), "..", "bin", "super-board-forge.py")]
+    return next((c for c in cands if c and os.path.isfile(c)), None)
+
+
+def pull_requests_ado(cwd, config_path):
+    """Azure DevOps through the forge's `pr refs` (one list call per state). None when it cannot be
+    asked: no forge, a failed or malformed read. Merged rows are trusted only when `headRefOid` is a
+    full sha; the forge already limits them to completed PRs, and the caller compares them EXACTLY."""
+    global FORGE_NAME
+    FORGE_NAME = "Azure DevOps"
+    forge = find_forge(project_root(cwd))
+    if not forge:
+        return None
+    import tempfile
+    scratch = tempfile.mkdtemp(prefix="cleanup-wt-")
+    # A throwaway halt file: this hook must neither be stopped by a run's halt nor start one.
+    env = dict(os.environ, SB_REPO_PATH=project_root(cwd), SB_GITHUB_HALT_FILE=os.path.join(scratch, "halt.json"),
+               SB_GITHUB_RETRY_DELAY="1")
+
+    def refs(state, limit):
+        try:
+            r = subprocess.run([sys.executable, forge, "--config", config_path, "pr", "refs", "--state", state,
+                                "--limit", limit], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
+                               env=env, timeout=45)
+            value = json.loads(r.stdout) if r.returncode == 0 else None
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return None
+        return value if isinstance(value, list) else None
+
+    try:
+        opened = refs("open", "200")
+        if opened is None:
+            return None
+        merged = refs("merged", "300")
+        if merged is None:
+            return None  # an unreadable merged list must never read as "nothing merged": keep everything
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    open_by = {}
+    for pr in opened:
+        open_by.setdefault(pr.get("headRefName"), pr.get("number"))
+        open_by.setdefault(pr.get("baseRefName"), pr.get("number"))
+    merged_by = {}
+    for pr in merged:
+        oid = pr.get("headRefOid")
+        if isinstance(oid, str) and len(oid) == 40:
+            merged_by.setdefault(pr.get("headRefName"), []).append(oid)
+    return {"open": open_by, "merged": merged_by, "exact": True}
 
 
 def pull_requests(cwd):
     """{open: {branch: number}, merged: {branch: [oid]}}, or None when gh is unavailable."""
+    ado = ado_config(project_root(cwd))
+    if ado:
+        return pull_requests_ado(cwd, ado[0])
     exe = os.environ.get("CLEANUP_WT_GH", "gh")
     env = dict(os.environ, GH_PROMPT_DISABLED="1", GH_NO_UPDATE_NOTIFIER="1", GH_PAGER="cat")
 
     def gh(*args):
         try:
-            r = subprocess.run([exe] + list(args), cwd=cwd, capture_output=True, text=True, env=env, timeout=15)
+            r = subprocess.run(command_line(tool_argv(exe) + list(args)), cwd=cwd, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace", env=env, timeout=15)
             return json.loads(r.stdout or "[]") if r.returncode == 0 else None
         except (OSError, ValueError, subprocess.TimeoutExpired):
             return None
@@ -274,7 +412,7 @@ def classify_remote(f, protected):
     if f.get("open_pr") is not None:
         return keep("open PR #%s" % f["open_pr"])
     if not f.get("gh"):
-        return keep("gh unavailable -- cannot rule out an open PR")
+        return keep("%s unavailable -- cannot rule out an open PR" % FORGE_NAME)
     if f.get("merged"):
         return {"bucket": REMOVE, "reason": "merged: " + f["merged"], "delete_branch": True}
     if f.get("today"):
@@ -298,7 +436,8 @@ def plan(ctx, args):
     rows, prunable = [], []
 
     def merged_for(name, sha, skip):
-        return None if skip else merged_state(ctx["cwd"], sha, bases, (prs or {}).get("merged", {}).get(name, []))
+        return None if skip else merged_state(ctx["cwd"], sha, bases, (prs or {}).get("merged", {}).get(name, []),
+                                              exact=bool((prs or {}).get("exact")))
 
     if args["local"]:
         linked = wts[1:]
@@ -340,7 +479,7 @@ def now_iso():
 
 def write_tsv(path, log):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as fh:
+    with open(path, "w", encoding="utf-8") as fh:
         fh.write("when\tkind\tname\tsha\tpath\taction\treason\n")
         for r in log:
             fh.write("\t".join(str(r[k]) for k in ("when", "kind", "name", "sha", "path", "action", "reason")) + "\n")
@@ -461,10 +600,10 @@ def bases_moved(ctx, names):
     tips = " ".join(b["sha"] for b in base_refs(ctx["cwd"], names))
     if not os.path.exists(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w") as fh:
+        with open(path, "w", encoding="utf-8") as fh:
             fh.write(tips + "\n")
         return False, path, tips
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         return fh.read().strip() != tips, path, tips
 
 
@@ -473,7 +612,7 @@ def hook_event():
     if sys.stdin.isatty():
         return None
     try:
-        ev = json.loads(sys.stdin.read() or "{}").get("hook_event_name")
+        ev = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace") or "{}").get("hook_event_name")  # UTF-8 whatever the code page
         return ev if ev in ("SessionStart", "PostToolUse") else None
     except ValueError:
         return None
@@ -513,7 +652,7 @@ def run(argv):
 
     if args.get("quiet"):
         if gate:
-            with open(gate[0], "w") as fh:
+            with open(gate[0], "w", encoding="utf-8") as fh:
                 fh.write(gate[1] + "\n")
         acted = [d for d in done if d.startswith(("removed", "deleted", "pruned"))]
         if acted:
@@ -525,7 +664,7 @@ def run(argv):
     print("bases: " + ", ".join(names))
     print_table(rows, not args["apply"])
     if not gh and args["remote"]:
-        print("note: gh unavailable -- open PRs unknown; remote branches are kept")
+        print("note: %s unavailable -- open PRs unknown; remote branches are kept" % FORGE_NAME)
     if done:
         print("\napplied:\n  " + "\n  ".join(done))
     elif not args["apply"] and any(r["bucket"] == REMOVE for r in rows):
@@ -536,6 +675,11 @@ def run(argv):
 
 def main():
     hook = "--auto" in sys.argv or "--post-merge" in sys.argv
+    for stream in (sys.stdout, sys.stderr):  # Windows pipes default to the ANSI code page
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace", newline="\n")
+        except (AttributeError, ValueError):
+            pass
     try:
         sys.exit(run(sys.argv[1:]))
     except Exception as e:  # a hook must never fail a session; by hand, say what broke

@@ -6,6 +6,7 @@
 # is already on the base branch gets built twice. Same files alone is not a
 # duplicate — it is a sequencing problem, and must not hold the card.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")"
 PRE="$(pwd)/../scripts/super-board-preflight.sh"
 

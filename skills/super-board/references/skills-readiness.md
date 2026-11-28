@@ -1,9 +1,11 @@
 # Skill readiness before dispatch
 
 Run `python3 .claude/bin/super-board-skills-ready.py --root <project> --host
-<claude|codex> --cards <cards.json>` before any claims or wave writes. The cards
-array carries number, status, labels and literal issue body; hydrate absent
-bodies read-only with the guarded GitHub reader (`--hydrate` does this).
+<claude|codex> --cards <cards.json> [--config <cfg> --hydrate]` before any claims or wave writes. The cards
+array carries number, status, labels and literal ticket body; hydrate absent
+bodies read-only with `python3 .claude/bin/super-board-forge.py --config <cfg> ticket view <N>`
+(`--hydrate --config <cfg>` does this itself: through the forge on any non-GitHub provider, through the
+GitHub read helper otherwise; without `--config` it assumes GitHub).
 For a worker boundary add `--lane build|qa|review`. Before using a conditional
 or custom helper add `--require <exact-name>`; repeat when the execution host changes.
 
@@ -11,7 +13,7 @@ Load `resolved_path` files from the JSON report. Use only its declared fallback
 IDs and source instructions. Exit 10 names missing required skills: return
 `status=halted`, detail beginning `skills-readiness:`, preserve card state,
 claims, worktrees and approval evidence, repair files and restart explicitly.
-Exit 64 means malformed input/catalog; halt and repair it. GitHub read exit 79
+Exit 64 means malformed input/catalog; halt and repair it. Read exit 79
 keeps its existing halt policy. Verification-readiness remains exit 9.
 
 `REGISTRY` in the installed script owns the executable dependency contract:

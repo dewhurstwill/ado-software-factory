@@ -4,6 +4,7 @@
 # unmerged work and the current worktree stay, dirty state is wip-committed, a stray
 # worktree loses its folder but keeps its branch, and the recovery TSV restores.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")"
 CW="$(pwd)/../hooks/cleanup-wt.py"
 fail() { echo "FAIL: $1" >&2; exit 1; }

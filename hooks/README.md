@@ -11,6 +11,16 @@ protected-push guard (opt-in) and the dev-only skill-eval gate.
 - `guard-delete-outside.py` — PreToolUse `Bash`: denies `rm`, `rmdir`, `unlink`, `find … -delete` / `-exec rm` and `git clean` whose target resolves outside `$CLAUDE_PROJECT_DIR`, and always `/` or `~` itself (honours `cd X &&`, `git -C X`, `~`, `$HOME`). Inside `/tmp`, `/private/tmp`, `/var/folders` and `$TMPDIR` stays allowed. A path whose value is only known at run time (`$(…)`, a variable set earlier in the same command) is allowed.
 - `cleanup-wt.py` — SessionStart (`--auto`): when a base branch tip moved since the last session, removes worktrees and local branches already merged into it. The merge gate also runs it with `--post-merge` after every merge. Never deletes unmerged work (a dirty worktree on a merged branch is wip-committed and its branch kept), never touches bases or the worktree it runs in, and writes a recovery TSV to `<git-common-dir>/cleanup-wt/<timestamp>.tsv` before acting. Restore with `git branch <name> <sha>`. A manual dry run (`python3 .claude/hooks/cleanup-wt.py`, then `--apply`) still works.
 
+## Windows
+
+Claude Code runs each `command` below in Git Bash on Windows (PowerShell only when Git Bash is not
+installed, and then these commands do not work). `$CLAUDE_PROJECT_DIR` arrives as a Windows path, which
+native Python reads as is. Two things the pack cannot do for you there: `python3` must start a real Python
+3.9+ in Git Bash (a python.org install has no `python3.exe`, and the Microsoft Store stub only prints a hint,
+so every guard would fail open; `install.sh` warns), and commands Claude runs through the PowerShell tool
+are not matched by `Bash` (set `CLAUDE_CODE_USE_POWERSHELL_TOOL=0` to keep every shell command behind the
+guards). See the README's Platforms section.
+
 ## Enable
 
 `install.sh` does this for you: it copies the scripts to `.claude/hooks/` in the target

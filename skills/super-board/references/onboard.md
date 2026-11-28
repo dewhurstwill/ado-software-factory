@@ -3,6 +3,13 @@
 Config schema and field notes: `config-schema.json`. Loaded by `SKILL.md` for `super-board onboard`.
 
 **Where it runs:** the current Claude Code session, in the user's folder. Not headless.
+
+**Provider.** A project's tickets, board and PRs live on GitHub or on Azure DevOps (config
+`provider`, chosen at step 2). Lanes reach either through `python3 .claude/bin/super-board-forge.py
+--config <cfg> <verb>` ([providers.md](providers.md)); onboarding is the one place that stays
+provider-specific, so steps 2, 3 and the error table carry a GitHub path and an Azure DevOps path.
+Ticket = GitHub issue / Azure DevOps work item; label = label / tag; board = the GitHub Project
+(`project.owner` + `project.number`) / the team's Azure DevOps board (`ado.*`).
 Invoked as `/super-board onboard` (get.sh / install.sh) or `/super-board:super-board onboard`
 (plugin install — skill names carry the plugin prefix).
 
@@ -33,7 +40,7 @@ only enabled entries applying to this project count.
 | One tool | ask with `AskUserQuestion` (≤ 4 questions per call, ≤ 4 options per question; the built-in "Other" box is the free-text option). NEVER free-text a choice that has options |
 | Fix, don't ask | a must-have (skills, scripts, workflows, guard hooks, settings entries, old folders, config keys, labels, columns) is fixed with NO question and listed under "Fixed for you". Only system tools and sign-ins are asked — through Claude Code's own permission prompt on the exact command |
 | Save as you go | every answer is written to `.claude/super-board/onboard-answers.json` the moment it is given |
-| Write once | files in the repo (config, settings.json allow lines, AGENTS.md, CLAUDE.md, docs) change only at step 8, after "Write everything". GitHub-side actions the user just picked (create or extend the board, create `staging`) run in their own step |
+| Write once | files in the repo (config, settings.json allow lines, AGENTS.md, CLAUDE.md, docs) change only at step 8, after "Write everything". Provider-side actions the user just picked (create or extend the board, create `staging`) run in their own step |
 | Secrets | NEVER read, grep, cat or source a dotenv file. Key names only, via `.claude/bin/super-board-env-check.sh` |
 
 **Scripts.** `SB=.claude/bin` after an install. Plugin install before step 1 has run: the plugin's
@@ -45,7 +52,13 @@ checkout, then re-run onboard.`
 | Script | Used in |
 |---|---|
 | `python3 $SB/super-board-setup.py check / fix --text` | 1 Checks |
-| `python3 $SB/super-board-setup.py board-rank / board-migrate / names` | 1 (upgrade), 3 Board |
+| `python3 $SB/super-board-setup.py check --config <staged config> --text` | 2, 3, 4 (Azure DevOps): one staged config, before it is saved |
+| `python3 $SB/super-board-setup.py board-rank / board-migrate / names` | 1 (upgrade), 3 Board (GitHub) |
+| `python3 $SB/super-board-forge.py --config <staged config> whoami / board ensure` | 2, 3 (Azure DevOps: the login, and the fix for a board the check found wanting) |
+
+Onboard runs every forge call with a throwaway halt file in front, as `super-board-setup.py` does —
+`SB_GITHUB_HALT_FILE="$(mktemp -d)/halt.json" python3 $SB/super-board-forge.py …` — so a rejected
+token during setup never halts a later run.
 | `python3 $SB/super-board-setup.py branch` | 4 Branch |
 | `python3 $SB/super-board-agents-md.py …` | 5 AGENTS.md |
 | `python3 $SB/super-board-settings.py allow … --dry-run` | 6 Policies |
@@ -60,7 +73,7 @@ checkout, then re-run onboard.`
 ```
 ⏺ super-board setup — 8 steps. Enter takes the recommended answer.
   1 🔍 Checks       install or update what the board needs
-  2 🔑 GitHub       sign in so I can manage boards
+  2 🔑 Sign in      GitHub or Azure DevOps, so I can manage boards
   3 🗂️ Board        pick or create your project board
   4 🌿 Branch       choose where finished work merges
   5 📜 AGENTS.md    move your rules into one file
@@ -73,14 +86,14 @@ checkout, then re-run onboard.`
 **Agenda strip** — first line of every step, done steps ticked, the current one bold:
 
 ```
-✓ 1 Checks · ✓ 2 GitHub · 3 Board · 4 Branch · 5 AGENTS.md · 6 Policies · 7 Bug sources · 8 Review
+✓ 1 Checks · ✓ 2 Sign in · 3 Board · 4 Branch · 5 AGENTS.md · 6 Policies · 7 Bug sources · 8 Review
 ⏺ 3 of 8 · 🗂️ Board — the robot takes tickets from here.
 ```
 
 | # | Header line |
 |---|---|
 | 1 | `1 of 8 · 🔍 Checks — install or update what the board needs.` |
-| 2 | `2 of 8 · 🔑 GitHub — sign in so I can manage boards.` |
+| 2 | `2 of 8 · 🔑 Sign in — GitHub or Azure DevOps, so I can manage boards.` |
 | 3 | `3 of 8 · 🗂️ Board — the robot takes tickets from here.` |
 | 4 | `4 of 8 · 🌿 Branch — where finished work merges.` |
 | 5 | `5 of 8 · 📜 AGENTS.md — Claude reads AGENTS.md; CLAUDE.md becomes "@AGENTS.md".` |
@@ -125,6 +138,9 @@ the step-8 table, then "Onboard found an existing setup. What now?" [Keep all �
                "permissions": "add", "collect": ["sentry", "github", "prs", "architecture", "linear"],
                "custom": [{"name": "linear", "kind": "mcp", "target": "linear"}] } }
 ```
+
+On Azure DevOps `answers` carries `"provider": "azure-devops"` and an `"ado"` object (the staged
+`ado` block, step 2) in place of `github`, and `board` is `{"team": …, "board": …}`.
 
 Write it atomically (temp file + rename) after every answer. A halt never loses work.
 
@@ -175,7 +191,7 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    │    The command is per OS (brew / apt / dnf / winget) and comes from the script.
    │    Declined: node → report exact missing skills and keep readiness red; existing resolved
    │    helpers still count, but missing required helpers halt dispatch;
-   │    git or gh → halt: "Without <tool> the board can't <why>. Your answers are saved — run
+   │    git, or gh on GitHub → halt: "Without <tool> the board can't <why>. Your answers are saved — run
    │    the command, then re-run onboard."
    ├─ Re-check (`check --text`) after every install; move on only when it says all green.
    ├─ Workflow runtime: syntax-check the installed workflow (same command run.md uses):
@@ -195,7 +211,8 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
             ✓ re-checked: all green
           Your CLAUDE.md still has its own rules — step 5 offers to move them.
       The two board lines come from `python3 $SB/super-board-setup.py board-migrate --config
-      <config>` — run it here when `gh auth status` already has the project scope, else in
+      <config>` (GitHub; an Azure DevOps board is fixed by `board ensure`, step 3) — run it here
+      when `gh auth status` already has the project scope, else in
       step 3 (it then prints them there). It adds missing columns, creates qa · bug · feature,
       maps old labels, labels every card `qa` on a board that was "qa-only", moves Skipped
       cards to Done, removes Skipped and restores any status the change cleared. Keep the board
@@ -205,7 +222,13 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
       root (or with the same `--root`). It resumes the saved plan and verifies remote results;
       it never takes a new snapshot over a partially upgraded board. No extra setup question.
 
-2. 🔑 GITHUB
+2. 🔑 SIGN IN — the provider first, then its sign-in
+   ├─ Bash(git remote get-url origin). dev.azure.com / *.visualstudio.com → Azure DevOps;
+   │    github.com → GitHub; anything else or no remote → AskUserQuestion "Where do the tickets
+   │    and pull requests live?" (header "Provider") [GitHub (Recommended) / Azure DevOps].
+   │    Stage config `provider` ("github" | "azure-devops") for step 8. GitHub → 2a; Azure DevOps → 2b.
+   │
+2a. 🔑 GITHUB
    ├─ Bash(gh auth status). Signed in with project scopes → `✓ GitHub connected.`; continue below.
    ├─ Not signed in → one line, then Bash(gh auth login) — the permission prompt asks.
    ├─ Missing scopes → "This opens a browser to approve board access — needed to move cards and
@@ -215,7 +238,7 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    │    Not now — the robot can't open pull requests]. Create → gh repo create <login>/<folder>
    │    --private --source . --remote origin
    ├─ Second account (AskUserQuestion, header "Robot account"); explain in four short lines:
-   │      The robot's gh issue, gh pr and gh project GraphQL calls share your 5,000 points/hr.
+   │      The robot's GraphQL calls (issues, pull requests, the Project) share your 5,000 points/hr.
    │      Finfluencer (2026-10-03/04): 3 cards cost ~2,850 (~950/card); 14 used all 5,000 in ~40 min.
    │      Board moves then failed; nearly every wave left the board idle for up to an hour.
    │      Your browsing and tools share that budget. A bot gets its own 5,000 points/hr.
@@ -230,7 +253,41 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
       configured claim identity. Otherwise `super-board-bot[bot]` when a GitHub App is installed
       on the repo, else the login. Stage `notifications.bot_identity` for step 8; see second-account.md.
 
-3. 🗂️ BOARD — one question: which board
+2b. 🔑 AZURE DEVOPS — no `gh`; a token instead
+   ├─ Token, first that exists (the forge's order): AZURE_DEVOPS_EXT_PAT in the environment; the
+   │    line AZURE_DEVOPS_EXT_PAT=… in the project's .env, then its .env.local (name only:
+   │    bash $SB/super-board-env-check.sh AZURE_DEVOPS_EXT_PAT, which looks in both); a working `az login`.
+   │    None → one line, no AskUserQuestion: "Create a personal access token with Work Items: Read &
+   │    write and Code: Read & write, and add AZURE_DEVOPS_EXT_PAT=<token> to .env (or .env.local) yourself (or run
+   │    `az login`). Answers are saved — re-run onboard." The token is NEVER typed, read or printed
+   │    by the agent.
+   ├─ Stage the `ado` block (config-schema.json → `ado`; providers.md → "Config") from the remote
+   │    https://dev.azure.com/<org>/<project>/_git/<repo>: organization "https://dev.azure.com/<org>",
+   │    project, repository. team defaults to "<project> Team", board to "Stories" (the backlog
+   │    level); work_item_types {"feature":"User Story","bug":"Bug","qa":"User Story"} and
+   │    body_fields {"Bug":"Microsoft.VSTS.TCM.ReproSteps"} are the defaults — stage a key only when
+   │    the project's process names differ. Write the staged config to onboard-staged/<slug>.json
+   │    (provider + ado + repo + base_branch), so the forge can read it before step 8.
+   ├─ Bash(python3 $SB/super-board-forge.py --config <staged config> whoami) → `✓ Azure DevOps
+   │    connected as <login>.` Exit 69 → no credentials (error table); 79 → the token was
+   │    rejected (401/403) or the organization/project is wrong (the throwaway halt file keeps
+   │    it from halting anything else).
+   ├─ Approvers (AskUserQuestion, header "Approvers"): "Who may approve a held merge by commenting
+   │    done?" [Me — <whoami login> (Recommended) / Nobody — a person completes held PRs in Azure
+   │    DevOps]. "Other" = type unique names (sign-in emails). → `ado.approvers`. Only listed names
+   │    approve (providers.md → "Human approval"); the token's own identity approves only when
+   │    listed. A separate identity for the agent: second-account.md → "Azure DevOps".
+   ├─ No remote → "Create the repository in Azure Repos and add it as origin, then re-run
+   │    onboard." (No repository is created for you.)
+   ├─ One call checks the staged config end to end (the `ado` block, the token's source, the
+   │    board shape, the repository and base branch; nothing is written):
+   │    python3 $SB/super-board-setup.py check --config <staged config> --text
+   │    Every red line is a step-3/4 item below; re-run it after each fix.
+   └─ bot_identity: stage "auto". It is GitHub-only: Azure DevOps claims with a tag
+      (`sb:claimed-<holder>`), never an assignee, so the key is ignored and no claim login is chosen
+      here (status shows the `whoami` login).
+
+3. 🗂️ BOARD — one question: which board (GitHub; Azure DevOps below)
    ├─ One checklist line, one labels line, no question about either:
    │      Columns: ✓ Backlog ✓ Ready ✓ Building ✓ QA ✓ Review ✓ Blocked ✓ Done
    │      Labels: feature · bug · qa (qa skips Building; no label = feature)
@@ -249,6 +306,20 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    └─ New → gh project create --owner <o> --title "<name>", link it to the repo, then
       board-migrate --prune-empty on it (the seven columns replace GitHub's default Todo /
       In Progress; labels). Prints its URL.
+   Azure DevOps — no "Which board?" question: the board is the team's board in the staged `ado`
+   block (`team`, `board`); the columns are a must-have, fixed with no question:
+   ├─ python3 $SB/super-board-setup.py check --config <staged config> --text → the board's changes
+   │    as one red `the board needs changes: …` line, or nothing for the board (it runs
+   │    `board ensure --check` itself).
+   ├─ Changes needed → python3 $SB/super-board-forge.py --config <staged config> board ensure →
+   │    one `changed:` line each: exactly Backlog · Ready · Building · QA · Review · Blocked · Done
+   │    (existing column ids reused, so cards keep their column), and Bugs shown on the board
+   │    (`bugsBehavior: asRequirements`; a new Agile project hides them). It needs a team
+   │    administrator; refusals are in the error table.
+   ├─ Labels are work item tags: nothing to create.
+   └─ Processes: Agile is verified live. Scrum and Basic map each column through the board's own
+      column-to-state mapping and are not verified — say so in one dim line when the process is
+      not Agile.
    There is no "Needs you" column and no Skipped column: a card waiting on a person goes to
    Blocked with 🙋 (block-template.md); a card dropped on purpose is closed and moved to Done.
    Second account chosen in step 2 → finish references/second-account.md now; verify bot access.
@@ -262,7 +333,16 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    │                  • main — every merge goes live (or just "main" with no deploy signal)
    │    staging found: • staging (Recommended) — already exists · • main — every merge goes live
    ├─ Create staging → Bash(git push origin main:staging) right away (the pick is the OK).
-   └─ main kept with a deploy signal → step 6 defaults to "you merge everything", target_env "live".
+   ├─ main kept with a deploy signal → step 6 defaults to "you merge everything", target_env "live".
+   └─ Azure DevOps, before the question:
+      ├─ python3 $SB/super-board-setup.py check --config <staged config> --text → an empty Azure Repos
+      │    repository (no branch, so no PR can be opened) or a missing base branch is a red line
+      │    with setup's exact fix: `git checkout -b <base> && git commit --allow-empty -m "Initial commit" && git push
+      │    -u origin <base>` (a clone with commits: `git push -u origin HEAD:<base>`), then re-run.
+      └─ One dim line under the question: "A branch policy on <base> that requires a reviewer or
+         a build means a person completes every PR: the merge gate stops with a human-gate line
+         (exit 7) and parks the card in Blocked 🙋." Policies are read per PR (`pr checks`); onboard
+         does not change them.
 
 5. 📜 AGENTS.md — one line, one question; one short question per conflict
    ├─ detect says CLAUDE.md is already the pointer → `✓ Already done — CLAUDE.md is "@AGENTS.md".`
@@ -296,7 +376,7 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    Folded details = ONE dim line under each, never a table:
       merge_policy.default auto · always_human: money, auth, schema · push guard on (main, master,
       <base>) · migrations.allowed_envs: test, staging
-      + Bash(gh project:*) + Bash(gh issue:*) + Bash(gh pr:*) + … (the --dry-run output, joined)
+      + Bash(python3 .claude/bin/super-board-forge.py:*) + Bash(git worktree:*) + … (the --dry-run output, joined)
    Review each → ONE more AskUserQuestion call, up to three questions:
     a. "Merge" — "Who merges a change that passes review?" [Robot merges normal changes
        (Recommended) / I merge everything]; production base: the order flips, and robot-merges
@@ -319,15 +399,16 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
        Session pooler string (port 5432) with special characters in the password URL-encoded,
        and a just-reset password takes ~20 s to reach the pooler — retry once before calling it wrong.
    Permission lines: the base list in run-workflow.md → "Mid-run permission prompts", plus the
-   merge lines when merge_policy.default is "auto" ("Bash(bash .claude/bin/super-board-merge-gate.sh:*)",
-   "Bash(gh pr merge:*)"), one "Bash(<migrate command>)" per allowed env, "Bash(bash
+   merge line when merge_policy.default is "auto" ("Bash(bash .claude/bin/super-board-merge-gate.sh:*)";
+   the gate merges through the forge itself, so no provider merge command is allowed), one
+   "Bash(<migrate command>)" per allowed env, "Bash(bash
    .claude/bin/super-board-env-check.sh:*)" and the test runner. N counts what is NOT already in
    settings.json: `super-board-settings.py allow .claude/settings.json <rules…> --dry-run`.
 
 7. 📥 BUG SOURCES — tick sources; "Add another source" is the free-text box
    ├─ AskUserQuestion multiSelect "Where should I look for problems?" (header "Bug sources"):
    │    Sentry — app errors (Recommended when detected) · PostHog — rage clicks, errors, slow pages
-   │    (Recommended when detected) · GitHub issues — bugs filed but not on the board · Past PRs —
+   │    (Recommended when detected) · Open tickets — bugs filed but not on the board · Past PRs —
    │    review comments that keep repeating · Architecture — tangled or duplicated code.
    │    Undetected Sentry / PostHog are left out. More than 4 options → split into two questions
    │    in the same call ("Error sources", "Code sources") — the tool takes 4 per question.
@@ -347,7 +428,7 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    ├─ Ping each built-in, read-only, before step 8:
    │      python3 .claude/skills/super-collect/scripts/collect_sentry.py  --config <staged> ping
    │      python3 .claude/skills/super-collect/scripts/collect_posthog.py --config <staged> ping
-   │      gh api graphql -f query='{viewer{login}}'          (github, prs)
+   │      python3 $SB/super-board-forge.py --config <staged> whoami   (github, prs)
    └─ One result block, one line per source; a failure leaves that source out, never halts:
           ✅ linear — can read issues (12 open bugs); saved in this project's config
           ✅ sentry · github · prs · architecture
@@ -365,7 +446,8 @@ Write it atomically (temp file + rename) after every answer. A halt never loses 
    │    Change one thing → pick the step, walk only it, back here / Cancel — nothing written].
    ├─ Write, in order (each atomic; stop and report on the first failure — answers are kept):
    │    ├─ .claude/super-board/configs/<slug>.json (committed): description, project, target
-   │    │    {type: repo | repo+url}, repo, base_branch, timezone, columns (the seven), labels,
+   │    │    {type: repo | repo+url}, provider, ado (Azure DevOps only; `project` is GitHub-only),
+   │    │    repo, base_branch, timezone, columns (the seven), labels,
    │    │    paths, merge_policy, migrations, collect (incl. custom), notifications {channel:
    │    │    "session", bot_identity}, worker_backend "workflow", host (always: `bash $SB/super-board-host.sh`;
    │    │    on exit 65 ask claude/codex/opencode), verify_commands (non-blank project checks). No `variant`.
@@ -388,6 +470,7 @@ DONE — run `python3 $SB/super-board-verification-ready.py --config <saved conf
       ⏺ Bash(self-check)  ⎿  all good
       ⏺ 🎉 Onboard complete.
         📋 Board: github.com/users/<owner>/projects/<n> (<title>)
+           (Azure DevOps: <organization>/<project>/_boards/board/t/<team>/<board>)
         🧹 Next: /super-board lint — checks every ticket has clear success criteria.
         🤖 Then: /super-board run.
 ```
@@ -456,16 +539,21 @@ answers are kept and it resumes at <step>".
 | Step | Failure | What the user sees |
 |---|---|---|
 | 1 | Pack files not found (plugin) | `🛑 Can't find the super-board plugin files. Run the one-line installer (get.sh) or ./install.sh <this-dir> from a checkout, then re-run onboard.` |
-| 1 | A tool install declined (git, gh) | `Without <tool> the board can't <why>. Your answers are saved — run <command>, then re-run onboard.` |
+| 1 | A tool install declined (git; gh on GitHub) | `Without <tool> the board can't <why>. Your answers are saved — run <command>, then re-run onboard.` |
 | 1 | Node declined, or `npx skills add` fails | `⚠️ Required worker skills remain unavailable: <exact names>. Install for <host> and restart.` Setup stays red; dispatch halts before claims. |
 | 1 | Workflow still fails `node --check` after the re-copy | `🛑 .claude/workflows/super-board-wave.js is corrupt. Re-run ./install.sh <this-dir> — don't hand-edit it.` |
 | 1 | settings.json invalid JSON | `✋ .claude/settings.json is not valid JSON; I left it untouched. Fix it, then re-run — only the settings entries repeat.` |
-| 2 | Scope refused in the browser | `🔑 GitHub asked for project,read:project,repo and you said no. Without them I can't read or move cards. Re-run: gh auth refresh -s project,read:project,repo.` |
-| 2 | Repo create refused | `📦 GitHub refused to create the repo (org admin required, or the free-repo quota). Pick an existing repo, or create one in the web UI, then re-run.` |
-| 3 | Org project denied | `🔑 You can't create projects under <org>. Ask an org admin, or use your account: gh project create --owner @me.` |
-| 3 | Board read-only | `🔑 That board is read-only for your account. Get write access, or pick another.` |
-| 3 | board-migrate exits 2 | Show its `error` and recovery-file path. Some changes may already be applied. Keep the board stopped and the recovery file; fix the access/read/write failure, then re-run the same command from the same project root. A concurrent-edit conflict needs review of the saved original/desired state; never delete the record to bypass it. |
-| 4 | `git push origin main:staging` rejected | `🌿 Couldn't create staging (<reason>). Create it on GitHub, or pick main.` |
+| 2 (GitHub) | Scope refused in the browser | `🔑 GitHub asked for project,read:project,repo and you said no. Without them I can't read or move cards. Re-run: gh auth refresh -s project,read:project,repo.` |
+| 2 (GitHub) | Repo create refused | `📦 GitHub refused to create the repo (org admin required, or the free-repo quota). Pick an existing repo, or create one in the web UI, then re-run.` |
+| 2 (Azure DevOps) | No credentials (forge exit 69) | `🔑 No Azure DevOps token. Create a personal access token with Work Items: Read & write and Code: Read & write and add AZURE_DEVOPS_EXT_PAT=<token> to .env yourself (never paste it here), or run az login; then re-run onboard.` |
+| 2 (Azure DevOps) | Token rejected (forge exit 79 on `whoami`) | `🔑 Azure DevOps refused the token, or <organization>/<project> is wrong. Check the token's scopes and expiry and the remote URL, then re-run.` |
+| 3 (GitHub) | Org project denied | `🔑 You can't create projects under <org>. Ask an org admin, or use your account: gh project create --owner @me.` |
+| 3 (GitHub) | Board read-only | `🔑 That board is read-only for your account. Get write access, or pick another.` |
+| 3 (GitHub) | board-migrate exits 2 | Show its `error` and recovery-file path. Some changes may already be applied. Keep the board stopped and the recovery file; fix the access/read/write failure, then re-run the same command from the same project root. A concurrent-edit conflict needs review of the saved original/desired state; never delete the record to bypass it. |
+| 3 (Azure DevOps) | `board ensure` exits 65 | `✋ Column "<name>" holds cards (or I couldn't check that it's empty); I won't delete it. Move its cards into one of the seven columns, then re-run.` |
+| 3 (Azure DevOps) | `board ensure` exits 69 (HTTP 401/403 on a write) | `🔑 Changing the board needs a team administrator of <team>. Ask one to run onboard, or to make you an admin, then re-run.` |
+| 4 | `git push origin main:staging` rejected | `🌿 Couldn't create staging (<reason>). Create it on GitHub or in Azure Repos, or pick main.` |
+| 4 (Azure DevOps) | `repository` says `empty: true` | `🌱 The repository has no branch yet, so no pull request can open. Run: git checkout -b <base> && git commit --allow-empty -m "Initial commit" && git push -u origin <base> — then re-run.` |
 | 5 | `coverage` exits 1 | Not an error: fix the mapping, re-run `coverage`, then show the result. |
 | 5 | Two managed blocks / dangling marker | `✋ AGENTS.md has <n> super-board markers. Leave one begin/end pair (or none) and re-run.` |
 | 7 | A ping fails | One ❌ line with the reason and what to add; the source is left out; onboard continues. |
@@ -473,7 +561,7 @@ answers are kept and it resumes at <step>".
 
 ---
 
-### Upgrade recovery limits
+### Upgrade recovery limits (GitHub)
 
 The recovery file is durable before any GitHub write, records verified progress, and is retained
 on failure. Full cursor pagination covers boards beyond 500 cards; missing/partial pages block
@@ -492,11 +580,13 @@ remove a pending recovery record; use its saved state to reconcile a conflict be
 ## Worker self-check (mandatory before the 🎉 screen)
 
 1. **Config validates** — `.claude/super-board/configs/<slug>.json` parses, has every required
-   field from `config-schema.json` (incl. `notifications.bot_identity`, `merge_policy`,
+   field from `config-schema.json` (incl. `notifications.bot_identity` on GitHub, ignored on Azure DevOps; `merge_policy`,
    `migrations`), has no `variant`, and `columns` is the seven.
 2. **Active pointer** — `.claude/super-board/active` holds exactly the slug + `\n`.
-3. **Board columns and labels** — `gh project field-list <n> --owner <o>` returns Backlog, Ready,
+3. **Board columns and labels** — GitHub: `gh project field-list <n> --owner <o>` returns Backlog, Ready,
    Building, QA, Review, Blocked, Done (no Skipped); `gh label list` has qa, bug, feature.
+   Azure DevOps: `python3 .claude/bin/super-board-forge.py --config <config> board ensure --check`
+   exits 0 (labels are tags: nothing to check).
 4. **Setup green** — `python3 .claude/bin/super-board-setup.py check` exits 0 (or only `needs`
    the user declined).
 5. **Workflow runtime** — unless `worker_backend` is `"claude-p"`, the step-1 `node --check` passes.

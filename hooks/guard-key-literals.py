@@ -64,7 +64,7 @@ def visible_text(payload):
         if not path or path.endswith(TEMPLATE_FILES):
             return ""
         try:
-            with open(path, errors="replace") as fh:
+            with open(path, errors="replace", encoding="utf-8") as fh:
                 return fh.read()
         except OSError:
             return ""
@@ -83,7 +83,7 @@ def hit_lines(text):
 
 def main():
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace") or "{}")  # UTF-8 whatever the code page
         hits = hit_lines(visible_text(payload))
         if not hits:
             return

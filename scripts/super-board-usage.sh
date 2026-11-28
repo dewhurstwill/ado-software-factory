@@ -46,6 +46,7 @@
 #    "used":96,"resets_at":1738425600,"age":42,"reason":"…"}
 # Exit: 0 ok, 10 pause, 3 unknown, 64 usage error.
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/super-board-compat.sh"  # Windows: jq/python3 shims; no-op elsewhere
 
 FILE="${SB_USAGE_FILE:-$HOME/.claude/super-board/usage.json}"
 MODE="${1:-}"; [ $# -gt 0 ] && shift

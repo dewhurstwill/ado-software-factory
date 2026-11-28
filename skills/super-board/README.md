@@ -1,6 +1,6 @@
 # /super-board
 
-Drives a GitHub Project board on its own: drag a card into `Ready`, and it comes back merged with evidence on the PR.
+Drives a GitHub Project or an Azure DevOps board on its own: drag a card into `Ready`, and it comes back merged with evidence on the PR.
 
 ## What It Does
 
@@ -13,7 +13,7 @@ Drives a GitHub Project board on its own: drag a card into `Ready`, and it comes
 
 ## When To Use It
 
-- You have a GitHub Project of cards with acceptance criteria and want them built, tested and reviewed unattended.
+- You have a board (GitHub Project or Azure DevOps) of cards with acceptance criteria and want them built, tested and reviewed unattended.
 - You want to harden code that already exists: label those cards `qa` and they skip Building (QA and Review only).
 
 ## Verbs
@@ -28,4 +28,4 @@ Drives a GitHub Project board on its own: drag a card into `Ready`, and it comes
 
 ## Install
 
-Part of the super-board pack: `./install.sh /path/to/project`. Needs `gh` (authenticated), `jq`, bash 3.2+, a GitHub Project (v2) with a `Status` field, dynamic workflows on in `/config`, and the [mattpocock/skills](https://github.com/mattpocock/skills) pack. Ships `pr-security-review` (run by the Tester in QA on every PR); `get.sh` and onboard also add Cloudflare's on-demand [`security-audit`](https://github.com/cloudflare/security-audit-skill). Full reference: [`docs/super-board/README.md`](../../docs/super-board/README.md).
+Part of the super-board pack: `./install.sh /path/to/project`. Needs `jq`, bash 3.2+, and either `gh` (authenticated) with a GitHub Project (v2) and a `Status` field, or an Azure DevOps token (`AZURE_DEVOPS_EXT_PAT` or `az login`) with the board set up by onboard ([providers](references/providers.md)), dynamic workflows on in `/config`, and the [mattpocock/skills](https://github.com/mattpocock/skills) pack. Ships `pr-security-review` (run by the Tester in QA on every PR); `get.sh` and onboard also add Cloudflare's on-demand [`security-audit`](https://github.com/cloudflare/security-audit-skill). Full reference: [`docs/super-board/README.md`](../../docs/super-board/README.md).

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the resolver's public CLI against isolated host installations."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -81,7 +82,9 @@ class Readiness(unittest.TestCase):
         self.full()
         path = self.root / '.claude/skills/code-review/SKILL.md'
         path.write_text(' \n'); self.run_cli(expected=10)
-        path.write_text('instructions'); path.chmod(0); self.run_cli(expected=10)
+        path.write_text('instructions')
+        if os.name != 'nt':  # Windows: chmod only sets read-only; a file cannot be made unreadable
+            path.chmod(0); self.run_cli(expected=10)
         path.chmod(0o644); path.unlink(); path.symlink_to(self.root / 'missing'); self.run_cli(expected=10)
         path.unlink(); path.mkdir(); self.run_cli(expected=10)
 

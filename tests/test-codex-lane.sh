@@ -4,6 +4,7 @@
 # Every case runs twice: through the super-board-codex-lane.sh shim and through
 # super-board-lane.sh --backend codex, with the same stubbed codex.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 KIT=$(cd "$(dirname "$0")/.." && pwd)
 if [ -z "${SB_LANE_ENTRY:-}" ]; then
   for entry in shim backend; do SB_LANE_ENTRY=$entry bash "$0" || { echo "FAIL: entry $entry" >&2; exit 1; }; done
@@ -53,7 +54,7 @@ RC=0; lane review >"$T/out" || RC=$?
 lane review --codex >"$T/out"
 jq -e '.status == "advanced" and .column == "Done"' "$T/out" >/dev/null || fail 'explicit review allowed'
 grep -q -- '--expect-head' "$SB_CODEX_TEST_LOG" || fail 'review must pin reviewed head to merge gate'
-grep -q 'Never run bare gh pr merge' "$SB_CODEX_TEST_LOG" || fail 'review must keep merge protocol'
+grep -q 'Never merge outside the gate' "$SB_CODEX_TEST_LOG" || fail 'review must keep merge protocol'
 [ "$(last_model)" = default ] || fail 'no model uses Codex default'
 lane build --codex=flag-model >"$T/out"
 [ "$(last_model)" = flag-model ] || fail 'flag model must reach -m'
@@ -247,10 +248,23 @@ JOB=$!
 for _ in {1..100}; do [ -s "$T/descendant.pid" ] && break; sleep 0.05; done
 [ -s "$T/descendant.pid" ] || fail 'stub did not start'
 WAVE_PID=$(cat .claude/super-board/codex-wave.pid)
-kill -TERM "$WAVE_PID"
-RC=0; wait "$JOB" || RC=$?
-[ "$RC" -eq 79 ] || fail 'interrupted wave must halt'
 DESCENDANT=$(cat "$T/descendant.pid")
-! kill -0 "$DESCENDANT" 2>/dev/null || fail 'descendant survived wave cancellation'
-[ ! -e .claude/super-board/codex-wave.pid ] && [ -z "$(ls -A .claude/super-board/inflight)" ] || fail 'interrupted wave leaves no live locks'
+if [ -z "${SB_WINDOWS:-}" ]; then
+  kill -TERM "$WAVE_PID"
+  RC=0; wait "$JOB" || RC=$?
+  [ "$RC" -eq 79 ] || fail 'interrupted wave must halt'
+  ! kill -0 "$DESCENDANT" 2>/dev/null || fail 'descendant survived wave cancellation'
+  [ ! -e .claude/super-board/codex-wave.pid ] && [ -z "$(ls -A .claude/super-board/inflight)" ] || fail 'interrupted wave leaves no live locks'
+else
+  # Windows has no SIGTERM for another process, so the wave's TERM handler cannot run:
+  # super-board-stop.sh ends the wave's process tree instead (and then clears its locks,
+  # covered by test-codex-stop.sh). Both PIDs here are Windows PIDs the wave's Python wrote.
+  win_alive() { tasklist //FI "PID eq $1" //FO CSV //NH 2>/dev/null | grep -q "\"$1\""; }
+  win_alive "$WAVE_PID" || fail 'the wave marker does not name the running wave'
+  win_alive "$DESCENDANT" || fail 'the stub descendant is not running'
+  taskkill //PID "$WAVE_PID" //T //F >/dev/null 2>&1 || fail 'taskkill could not end the wave'
+  wait "$JOB" || true
+  for _ in {1..50}; do win_alive "$DESCENDANT" || break; sleep 0.2; done
+  ! win_alive "$DESCENDANT" || fail 'descendant survived wave cancellation'
+fi
 echo "PASS: test-codex-lane.sh [$SB_LANE_ENTRY] (model/ladders/router/review/sandbox/results/wave/halt/cancellation)"

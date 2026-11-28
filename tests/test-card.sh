@@ -6,6 +6,7 @@
 # the call count — a warm move is ONE mutation, a cold one is two 1-point reads
 # plus the mutation — and that a stale option id is recovered, not mis-moved.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")"
 CARD="$PWD/../scripts/super-board-card.sh"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT

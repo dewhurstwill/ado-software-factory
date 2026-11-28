@@ -4,6 +4,7 @@
 # arguments instead of reaching the network. Each case installs into a fresh
 # temp target and checks what landed.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")/.."
 PACK="$PWD"
 GET="$PACK/get.sh"
@@ -16,7 +17,9 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/src/super-board-test"
 tar -cf - --exclude ./.git --exclude ./evals --exclude ./docs . | tar -xf - -C "$WORK/src/super-board-test"
 tar -czf "$WORK/pack.tgz" -C "$WORK/src" super-board-test
-export SUPER_BOARD_TARBALL="file://$WORK/pack.tgz"
+# A native curl (Windows) needs the drive form: file:///C:/…
+FILE_WORK="$WORK"; if [ -n "${SB_WINDOWS:-}" ] && command -v cygpath >/dev/null; then FILE_WORK="/$(cygpath -m "$WORK")"; fi
+export SUPER_BOARD_TARBALL="file://$FILE_WORK/pack.tgz"
 
 # Stubs: npx records its argv; gh and jq exist so no warnings fire.
 mkdir -p "$WORK/bin"
@@ -90,7 +93,7 @@ if bash "$GET" --bogus --no-helper-skills --target "$T" >/dev/null 2>&1; then fa
 # 7 — a bad tarball URL fails cleanly and leaves no temp folder behind.
 T="$WORK/t7"; mkdir -p "$T"
 mkdir -p "$WORK/tmp7"
-if TMPDIR="$WORK/tmp7" SUPER_BOARD_TARBALL="file://$WORK/nope.tgz" bash "$GET" --no-helper-skills --target "$T" >/dev/null 2>&1; then
+if TMPDIR="$WORK/tmp7" SUPER_BOARD_TARBALL="file://$FILE_WORK/nope.tgz" bash "$GET" --no-helper-skills --target "$T" >/dev/null 2>&1; then
   fail "missing tarball was accepted"
 fi
 [ -z "$(ls -A "$WORK/tmp7")" ] || fail "temp folder was left behind after a failed download"
@@ -111,10 +114,22 @@ printf '%s\n' "$out" | grep -q '^🧠 helper skills: installed$' || fail "helper
 T="$WORK/t9"; mkdir -p "$T"
 # /usr/bin can contain node on Linux. Keep only the tools this install uses.
 NOBIN="$WORK/bin-nonode"; mkdir -p "$NOBIN"
-for t in bash id curl tar gzip python3 mktemp mkdir rm dirname tr cp ln chmod grep basename sed gh jq; do
-  ln -s "$(command -v "$t")" "$NOBIN/$t"
-done
-out=$(PATH="$NOBIN" bash "$GET" --target "$T" 2>&1) || fail "install without node failed: $out"
+# type -P: the file, never a shell function (on Windows python3/jq are compat shims).
+if [ -z "${SB_WINDOWS:-}" ]; then
+  for t in bash id curl tar gzip python3 mktemp mkdir rm dirname tr cp ln chmod grep basename sed gh jq; do
+    ln -s "$(type -P "$t")" "$NOBIN/$t"
+  done
+  NOPATH="$NOBIN"
+else
+  # Windows: an MSYS program finds msys-2.0.dll beside its real path only, so keep
+  # Git's /usr/bin (no node there) and wrap the native tools this install needs.
+  for t in curl python3 gh jq; do
+    p=$(type -P "$t" || true); [ "$t" != python3 ] || p=${SB_PYTHON:-$p}
+    printf '#!/bin/sh\nexec "%s" "$@"\n' "$p" > "$NOBIN/$t"; chmod +x "$NOBIN/$t"
+  done
+  NOPATH="$NOBIN:/usr/bin"
+fi
+out=$(PATH="$NOPATH" bash "$GET" --target "$T" 2>&1) || fail "install without node failed: $out"
 printf '%s\n' "$out" | grep -q '✗ node' || fail "missing node should be marked ✗: $out"
 printf '%s\n' "$out" | grep -q '^🧠 helper skills: skipped — 🔍 Checks will fix this$' || fail "helper line should defer to Checks: $out"
 printf '%s\n' "$out" | grep -q '^🔒 security-audit: skipped — 🔍 Checks will fix this$' || fail "security-audit line should defer to Checks: $out"

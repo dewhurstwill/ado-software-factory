@@ -2,6 +2,7 @@
 # Publication boundary: local/remote tag mismatch must never call gh release create.
 # git/gh are stubbed; no tag, release, or network writes.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 PACK=$(cd "$(dirname "$0")/.." && pwd)
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT

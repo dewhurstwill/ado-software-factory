@@ -51,6 +51,100 @@ Or as a Claude Code plugin:
 > [!NOTE]
 > The plugin ships the skills only. Run `/super-board:super-board onboard` and its 🔍 Checks step adds the guard hooks, scripts and workflows. Needs Claude Code, `gh`, `jq`, bash 3.2+ and Python 3.9+; the installer checks.
 
+### Providers: GitHub or Azure DevOps
+
+The board, tickets and pull requests live on one provider per project, set by `provider` in the
+project config. Absent means `github`, so existing installs do not change.
+
+| | GitHub (default) | Azure DevOps |
+|---|---|---|
+| Tickets | Issues | Azure Boards work items (User Story, Bug) |
+| Board | Projects v2, Status field | One team's Kanban board, seven columns |
+| Labels | Labels | Tags |
+| Claim | Assignee | Tag `sb:claimed-<holder>` |
+| Pull requests | GitHub PRs | Azure Repos PRs |
+| Sign-in | `gh auth login` | A PAT (`AZURE_DEVOPS_EXT_PAT`, in the environment or the project's `.env`) or `az login` |
+
+Azure DevOps support is being added in this fork and is not complete:
+
+| Part | Azure DevOps status |
+|---|---|
+| Board and tickets: read, move, create, label, comment, claim, wave planning | Works, checked against a live organisation |
+| Board setup (`board ensure`: seven columns, bugs on the board) | Works, checked live |
+| Pull requests: open, comment, read the diff, rewrite PR body blocks | Works, checked live |
+| Merge gate: pinned to the reviewed commit, squash, branch policies respected | Works, checked live |
+| Approving a held merge with a `done` comment | Works, checked live. Only sign-ins listed in `ado.approvers` count |
+| Status view, ticket filers (bug, refactor, collect), stop, cleanup hook, rate-limit guard | Works; status and bug filer checked live |
+| Onboarding checks (`super-board-setup.py`): token, board shape, empty repository | Works against the test server; not yet run live |
+| Skill instructions (what lane agents are told to run) and onboarding questions | One provider-neutral set: every lane step is a forge verb (`tests/test_prose_provider_neutral.py` guards it); onboarding has an Azure DevOps path. Not yet run end to end by a live lane agent |
+
+To try it, install from this fork and add the block below to
+`.claude/super-board/configs/<slug>.json`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/dewhurstwill/ado-software-factory/main/get.sh | SUPER_BOARD_REPO=dewhurstwill/ado-software-factory bash
+```
+
+```json
+{
+  "provider": "azure-devops",
+  "ado": {
+    "organization": "https://dev.azure.com/<org>",
+    "project": "<project>",
+    "team": "<project> Team",
+    "board": "Stories",
+    "repository": "<repo>",
+    "approvers": ["you@example.com"]
+  }
+}
+```
+
+`approvers` lists who may release a merge the gate holds (money, auth, schema, big diffs) by
+replying `done`; leave it empty and a person merges held PRs in Azure DevOps instead.
+
+The PAT needs **Work Items: Read & write** and **Code: Read & write**, and its owner must be a
+team administrator to set up the board columns. The Agile, Scrum and Basic processes are
+supported through the board's own column-to-state mapping; only Agile has been run live.
+An Azure DevOps PR description holds 4,000 characters, so a long PR body keeps its history and
+screenshots in the PR's first comment thread. A branch policy that needs a reviewer or a build is
+respected: the gate reports the PR as waiting for a person instead of merging.
+Verb contract, mapping and the service behaviour this relies on:
+[providers.md](skills/super-board/references/providers.md).
+
+### Platforms: macOS, Linux, Windows
+
+| Platform | Shell | Status |
+|---|---|---|
+| macOS | bash 3.2+ | Every offline suite runs in CI |
+| Linux | bash | Every offline suite runs in CI |
+| Windows | Git Bash (the shell Claude Code uses on Windows) | Every offline suite runs in CI |
+
+WSL counts as Linux. On native Windows, before `install.sh`:
+
+1. Install [Git for Windows](https://git-scm.com/downloads/win). Claude Code runs its Bash tool and every
+   hook command in Git Bash; without it there is no Bash tool and the guard hooks never fire. If Claude Code
+   cannot find it, set `CLAUDE_CODE_GIT_BASH_PATH` (for example `C:\Program Files\Git\bin\bash.exe`) in the
+   `env` block of your settings.
+2. Install Python 3.9+ and make the bare name `python3` start it in Git Bash: the guard hooks and the skills
+   call `python3`. A python.org install has only `python` and `py`, and the Microsoft Store stub that answers
+   to `python3` just prints a hint. Turn off the `python3` App execution alias (Settings → Apps → Advanced app
+   settings), then copy `python.exe` to `python3.exe` in the same folder, or install Python with the Python
+   install manager, which adds `python3`. Check: `python3 --version` in Git Bash. `install.sh` warns when it fails.
+3. Put `jq` and Node.js on `PATH`. For GitHub also `gh`, then `gh auth login`. For Azure DevOps a PAT in
+   `AZURE_DEVOPS_EXT_PAT` (environment or the project's `.env`) is enough; `az` with `az login` is the alternative.
+4. Run the pack's scripts from Git Bash (`bash install.sh …`), not PowerShell or CMD.
+5. Turn on Developer Mode (Settings → System → For developers) or run Git Bash as administrator once for
+   `install.sh`: the per-host links are real symlinks, and without the right to make them it copies the files
+   and says so.
+6. The guard hooks match Claude Code's Bash, Read, Edit and Write tools. Commands Claude runs through the
+   PowerShell tool (on by default for claude.ai and Console accounts when Git Bash is installed) are not
+   checked by them. To keep every shell command behind the guards, set `CLAUDE_CODE_USE_POWERSHELL_TOOL` to
+   `0` in the `env` block of the project's `.claude/settings.json`.
+7. Long paths: worktrees live under `.claude/worktrees/`. Keep the project path short or enable Windows long
+   paths and `git config --global core.longpaths true`.
+8. Use the default `worker_backend: "workflow"`. The legacy `claude-p` runner works, but a stop there ends
+   workers at once (Windows has no SIGTERM for another process), so a worker gets no chance to clean up.
+
 ### Security
 
 Two security skills come with every install, and they stay separate:

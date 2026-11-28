@@ -4,6 +4,8 @@ clarifying answers.
 
 ## Mission
 
+Tickets, the board and PRs go through `python3 .claude/bin/super-board-forge.py --config <cfg> <verb>` on GitHub and Azure DevOps alike (written `forge <verb>` below; always type the full command; [providers.md](../../super-board/references/providers.md)); a **ticket** is a GitHub issue or an Azure DevOps work item.
+
 **Before worker writes or worktree creation:** follow [skill readiness](../../super-board/references/skills-readiness.md).
 Resolve this lane for the actual host, load the report's files/fallbacks, halt
 on missing requirements and recheck each conditional helper before use.
@@ -156,7 +158,7 @@ The default target is configured by `BASE_URL`. Treat production URLs as product
 
 A 200 response with a blank body is a bug, not a green test. Every spec
 under `e2e/paths/` must enforce these checks before declaring the cell
-green. If any of these fire, the cell is `[b]` (file a GH issue).
+green. If any of these fire, the cell is `[b]` (file a ticket).
 
 1. **No console errors** — `expect(report.forensics.consoleErrors).toEqual([])`
    at end of test. Filter only by `level === 'error'` (warnings allowed).
@@ -264,18 +266,18 @@ Read the result. For each red spec:
 
 For real reds:
 - File the bug to `iteration-N.md` Section 1 (Regression failures).
-- **File a GitHub issue immediately** (see "Filing bugs to GitHub" below) and
-  capture the returned issue number. Reference the GH issue in the
+- **File a ticket immediately** (see "Filing bugs as tickets" below) and
+  capture the returned ticket number. Reference the ticket in the
   `iteration-N.md` Section 1 entry as `→ #<N>`.
 - Decide whether to attempt a fix in this iter (see "Fix flow — PRs, never
   direct-to-main" below). If yes: branch + PR + reviewer skills. If no:
-  leave for human or `/super-build` to pick up the GH issue from `Ready`.
+  leave for human or `/super-build` to pick up the ticket from `Ready`.
 
 If a bug fix is going to take >15 min (gnarly root cause) OR the failure
 is an "assertion mismatch" rather than an objective fail signal, do NOT
-attempt the fix this iter. Note the GH issue number in `iteration-N.md`
+attempt the fix this iter. Note the ticket number in `iteration-N.md`
 and move on. Next iter's regression catches the still-red spec and the
-human can prioritize the GH issue on the project board.
+human can prioritize the ticket on the board.
 
 ### Fix flow — PRs, never direct-to-main (HARD RULE)
 
@@ -295,6 +297,7 @@ acceptable; a fix can silently disable a feature to make a wrong spec pass.
 
 2. **Open a fix branch off the active branch:**
    ```bash
+   BASE=$(git branch --show-current)
    git switch -c fix/super-qa-iter-${N}-${slug}-${ISSUE_N}
    ```
 
@@ -309,7 +312,8 @@ acceptable; a fix can silently disable a feature to make a wrong spec pass.
    - <spec that proves it>
    Refs #${ISSUE_N}"
    git push -u origin HEAD
-   gh pr create \
+   python3 .claude/bin/super-board-forge.py --config <cfg> pr create \
+     --base "$BASE" --head "$(git branch --show-current)" --closes "$ISSUE_N" \
      --title "🐛 [fix] <area>: <one-line bug summary>" \
      --label super-qa \
      --label "$([[ "$SIGNAL" = "objective" ]] && echo auto-merge-candidate || echo needs-human-review)" \
@@ -348,7 +352,7 @@ acceptable; a fix can silently disable a feature to make a wrong spec pass.
 
 7. **Reference the PR everywhere:**
    - In `queue.md`: `[b] /foo → BUG-N.M → #${ISSUE_N} → PR #${PR_N} (iter:N)`
-   - In `iteration-N.md` Section 4 (Fixes attempted): record GH issue +
+   - In `iteration-N.md` Section 4 (Fixes attempted): record ticket +
      PR number + reviewer verdicts + auto-merge eligibility.
 
 **On the active branch (the loop's working branch), only commit:**
@@ -361,7 +365,7 @@ acceptable; a fix can silently disable a feature to make a wrong spec pass.
 - A change to production code (`client/`, `server/`, `shared/`) — those
   go through PRs.
 - A `🚧 [wip] super-qa:` commit for an unresolved fix — close the fix branch and leave
-  the GH issue open instead.
+  the ticket open instead.
 
 ### Phase 2 — Explore (bounded)
 
@@ -486,8 +490,8 @@ acceptable; a fix can silently disable a feature to make a wrong spec pass.
      a child" below). Push children to the back of the queue, with their
      parent's level + 1 in the section header.
    - **Red 2x:** mark `[b]` and append `→ BUG-N.M → #<gh-issue> (iter:N)`.
-     Do NOT push children. **File a GitHub issue immediately** (see "Filing
-     bugs to GitHub" below) and use the returned number in the queue line
+     Do NOT push children. **File a ticket immediately** (see "Filing
+     bugs as tickets" below) and use the returned number in the queue line
      and in `iteration-N.md` Section 3. Apply the fix-flow rules
      ("Fix flow — PRs, never direct-to-main").
    - **Flaky:** mark `[?]` and append `→ FLAKY (iter:N)`.
@@ -538,7 +542,7 @@ acceptable; a fix can silently disable a feature to make a wrong spec pass.
    **Process the verdict:**
    - If "no UX issues" → log one line in `iteration-N.md` Section 6:
      `<slug>: UX clean`. Continue.
-   - For each finding → file a GH issue via `super-qa-file-bug.sh` with
+   - For each finding → file a ticket via `super-qa-file-bug.sh` with
      kind `ux`, category `visual`, priority per the agent's call, and suggested owner `ui-refine-loop` (a UI ticket — a human can run `/ui-refine-loop`; the board never triggers it). Body includes
      the finding's location + why + suggested fix. The cell still counts
      as `[x]` (functional green); UX bugs are a separate stream from
@@ -582,24 +586,24 @@ items that match these rules — and **only** these:
 - Hash-only anchors (`#section`) unless the URL hash changes the rendered
   view materially (rare).
 
-### Filing bugs to GitHub (mandatory for every `[b]` cell + every regression red)
+### Filing bugs as tickets (mandatory for every `[b]` cell + every regression red)
 
-Bugs are tracked in **GitHub Issues, in the `Bug` column of the resolved
+Bugs are tracked as **tickets, in the `Bug` column of the resolved
 **Super Ultimate QA** project** (override the column with
-`SUPER_QA_TARGET_OPTION_NAME`),
+`SUPER_QA_TARGET_OPTION_NAME`; Azure DevOps: the config's board, `--column`, default `Ready`),
 not in markdown files. The `iteration-N.md` bug section is the per-iter audit
-trail; the GH issue is the persistent tracker that you, the human, and any
+trail; the ticket is the persistent tracker that you, the human, and any
 future `/super-build` worker can pick up.
 
 **This is a carved exception to the project rule "ask before
-`gh issue create`":** the loop is autonomous and runs unattended, so it is
-authorized to auto-file issues — but ONLY with the `source:qa` label
-so the human can triage them all with `gh issue list -l source:qa`.
+creating a ticket":** the loop is autonomous and runs unattended, so it is
+authorized to auto-file tickets — but ONLY with the `source:qa` label
+so the human can triage them all with `forge ticket list --label source:qa`.
 
 **For each bug** (regression red OR explore `[b]`), do this immediately on
 detection (do NOT batch at end of iter):
 
-1. **Write the issue body** to a temp file, e.g.
+1. **Write the ticket body** to a temp file, e.g.
    `/tmp/super-qa-iter-${N}-bug-${slug}.md`, in the ticket format of
    `.claude/skills/super-board/references/writing-standard.md` § 3 — enough
    context for a future headless session to fix it without rediscovery. The
@@ -622,7 +626,7 @@ detection (do NOT batch at end of iter):
    `super-review` for release-readiness), the dedupe key in `--fingerprint`
    (`<slug>|<test-case>|<failure-signature>`).
 
-2. **File the issue + auto-promote to Ready:**
+2. **File the ticket + auto-promote to Ready:**
    ```bash
    ISSUE_N=$(scripts/super-qa-file-bug.sh \
      --title "<one-line title>" \
@@ -637,11 +641,12 @@ detection (do NOT batch at end of iter):
      --fingerprint "<slug>|<tc>|<failure-signature>" \
      --suggested-skill super-build)
    ```
-   The issue title will be board-readable, for example `🐛 [bug] imports: CSV upload fails after submit`, and the labels will include `bug`, `source:qa`, `priority:<high|medium|low>`, optional `area:<area>`, optional `qa:<category>`, and optional `skill:<owner>`. The script validates required body sections and dedupes by fingerprint: if the same open `source:qa` issue already exists, it comments with the new evidence and returns the existing issue number instead of creating a duplicate card.
+   The filer takes the provider from `--config <cfg>`, else `$SB_CONFIG`; with neither it files on GitHub. On Azure DevOps pass `--config <cfg>`.
+   The issue title will be board-readable, for example `🐛 [bug] imports: CSV upload fails after submit`, and the labels will include `bug`, `source:qa`, `priority:<high|medium|low>`, optional `area:<area>`, optional `qa:<category>`, and optional `skill:<owner>`. The script validates required body sections and dedupes by fingerprint: if the same open `source:qa` ticket already exists, it comments with the new evidence and returns the existing ticket number instead of creating a duplicate card.
 
-   The script prints the new issue number on stdout and drops the issue card
+   The script prints the new ticket number on stdout and drops the card
    in the `Bug` column of the resolved **Super Ultimate QA** project (see
-   `../SKILL.md` → "Project resolution"). Capture `$ISSUE_N` and reference it
+   `../SKILL.md` → "GitHub: project resolution"; Azure DevOps: the config's board, `--column`, default `Ready`). Capture `$ISSUE_N` and reference it
    everywhere downstream:
    - In `queue.md` line: `[b] /foo → BUG-N.M → #${ISSUE_N} (iter:N)`
    - In `iteration-N.md` Section 3 YAML: `gh_issue: ${ISSUE_N}`
@@ -650,10 +655,11 @@ detection (do NOT batch at end of iter):
 3. **If the script exits non-zero:**
    - Exit 64/66/70: bad arguments — log a `loop-internal` failure to
      `iteration-N.md` Section 1 and continue (do NOT halt the iter).
-   - Exit 71: issue created but project-board promote failed — capture the
-     printed issue number anyway, log "issue #N filed but not in Ready —
+   - Exit 71: ticket created but board promote failed — capture the
+     printed ticket number anyway, log "issue #N filed but not in Ready —
      manual move required" in `iteration-N.md`, continue.
-   - Other non-zero: GH API failure. Log the bug to `iteration-N.md` Section
+   - Exit 79: the run is halted (unknown write outcome); stop the iter and preserve work.
+   - Other non-zero: provider API failure. Log the bug to `iteration-N.md` Section
      3 with `gh_issue: PENDING` and continue. The orchestrator's next iter
      will not retry — this is a one-shot best-effort and the `iteration-N.md`
      entry is the durable record.
@@ -664,7 +670,7 @@ detection (do NOT batch at end of iter):
 - `low` — cosmetic, copy, low-impact polish, documentation/testability cleanup.
 
 If unsure between two tiers, pick the **higher** priority. The human can
-re-label later via `gh issue edit`.
+re-label later via `forge ticket edit`.
 
 ### Phase 3 — Report
 

@@ -1,12 +1,14 @@
 # super-board: how it works
 
 > **What it does not do:** super-board installs skills, scripts, a workflow and guard hooks,
-> and onboard sets up your GitHub Project. It does not grant `gh` access on its own, add CI, or approve merges you
+> and onboard sets up your board (a GitHub Project or an Azure DevOps team board). It does not grant `gh` or
+> Azure DevOps access on its own, add CI, or approve merges you
 > have not allowed. It is not a CI replacement: workers push branches and your CI still runs.
 > It is not a free pass on review: set `human_approves_merge: true` to keep a person on every
 > merge. It is not for cards without acceptance criteria: QA grades against them.
 
-super-board watches a GitHub Project and runs Build → QA → Review for each card, merging when
+super-board watches a board (a GitHub Project or an Azure DevOps team board, see
+`skills/super-board/references/providers.md`) and runs Build → QA → Review for each card, merging when
 the evidence holds. The board is the only state: every agent re-reads it, so a run survives
 Ctrl-C, restarts and rate-limit pauses, and `/super-board run <slug>` resumes from whatever
 column each card is in.
@@ -36,7 +38,7 @@ flowchart LR
   qa -->|fail| ready
   review -->|bounce| ready
   gate -->|stale or conflicts| ready
-  gate -->|refused by GitHub| blocked["Blocked<br/>human"]
+  gate -->|refused by the provider| blocked["Blocked<br/>human"]
   blocked -->|"blockers closed (sweep)"| ready
 ```
 
@@ -52,12 +54,12 @@ merge with a hand-off; a card labelled `qa` skips Building.
 | # | Step | What happens |
 |---|---|---|
 | 1 | 🔍 Checks | Fixes every must-have with no question — skills, scripts, workflows, guard hooks, settings entries, old folders (super-refine, cleanup-wt, arch-loop), config keys, labels, columns — and lists them under "Fixed for you". Asks only to install a system tool (the exact brew / apt / winget command) or sign in, then re-checks until green. An older super-board is upgraded here ("Upgraded for you"). |
-| 2 | 🔑 GitHub | Signs in and adds board access (`gh auth refresh -s project,read:project,repo`) only when missing; offers to create the repo. |
-| 3 | 🗂️ Board | Ranks your GitHub Projects by matching columns and recommends reusing the best (adds what is missing, keeps cards), or creates one with a name taken from package.json / README. |
+| 2 | 🔑 Sign in | Picks GitHub or Azure DevOps from the remote. GitHub: signs in and adds board access (`gh auth refresh -s project,read:project,repo`) only when missing; offers to create the repo. Azure DevOps: needs a token (`AZURE_DEVOPS_EXT_PAT` in the environment or `.env`, or `az login`), stages the `ado` block and who may approve (`ado.approvers`). |
+| 3 | 🗂️ Board | GitHub: ranks your GitHub Projects by matching columns and recommends reusing the best (adds what is missing, keeps cards), or creates one with a name taken from package.json / README. Azure DevOps: sets the team's board to the seven columns and shows bugs on it (`board ensure`, needs a team administrator). |
 | 4 | 🌿 Branch | Finds branches and the deploy source; no staging → "Create staging from main" (Recommended). |
 | 5 | 📜 AGENTS.md | "Move your N CLAUDE.md rules into AGENTS.md?" — one short question per conflict, nothing lost (coverage-checked). |
 | 6 | 🛡️ Policies | Two questions: safe defaults (merge rule, push guard, migrations), and the permission lines. |
-| 7 | 📥 Bug sources | Sentry, PostHog, GitHub issues, past PRs, architecture, plus "➕ Add another source": a link, app, API URL, MCP server or command, pinged read-only before it is saved. |
+| 7 | 📥 Bug sources | Sentry, PostHog, open tickets not on the board, past PRs, architecture, plus "➕ Add another source": a link, app, API URL, MCP server or command, pinged read-only before it is saved. |
 | 8 | ✅ Review | One compact table, then "Write everything?" — files change once, here. |
 
 Stop at any step: the answers are saved, and the next run shows them and continues. Testing a
@@ -72,15 +74,15 @@ card dropped on purpose is closed as not planned and moved to Done with a 🤷 c
 
 ## Setup notes
 
-- Needs Claude Code, `gh` (authenticated for the board's owner), `jq`, bash 3.2+ and Python 3.
+- Needs Claude Code, `gh` (authenticated for the board's owner) on GitHub or an Azure DevOps token (`AZURE_DEVOPS_EXT_PAT` or `az login`) on Azure DevOps, `jq`, bash 3.2+ and Python 3.
 - Or install from a checkout: `./install.sh [--no-hooks] [--protect-main] /path/to/your-project`.
-- The board is a GitHub Project (v2) with a `Status` field: `Backlog, Ready, Building, QA, Review, Blocked, Done`. `onboard` reuses your best-matching board (adding what is missing, keeping every card) or creates one.
+- The board is a GitHub Project (v2) with a `Status` field, or an Azure DevOps team board, with the columns `Backlog, Ready, Building, QA, Review, Blocked, Done`. On GitHub `onboard` reuses your best-matching board (adding what is missing, keeping every card) or creates one; on Azure DevOps it sets the team's board to those columns.
 - Three labels route cards: `qa` skips Building (test what exists), `bug` and `feature` are built first; no label is built too.
 - Default backend is in-session dynamic workflows: turn them on in `/config`. Headless `claude -p` is opt-in (`worker_backend: "claude-p"`).
 - Set `verify_commands` in the config. Without them the merge gate cannot prove the result builds, and says so.
 - `onboard` fixes what the board needs without asking (skills, scripts, workflows, guards, settings, old folders, config keys) and asks only to install a system tool or sign in. An older super-board is upgraded in place (see [Upgrading from 2.x](../../RELEASE-NOTES.md#upgrading-from-2x)).
 - `onboard` asks once what the robot may do: auto-merge normal changes up to 400 changed lines (money, auth, destructive schema like DROP/TRUNCATE/RENAME, and bigger PRs wait for you; additive migrations run only on the databases you allow, never live), protect main, and which databases it may migrate (default test + staging). Anything only you may run lands in Blocked tagged 🙋 with the exact command; comment `done` and the next wave merges.
-- Auto-merge needs the merge-gate and `gh pr merge` lines in your allowlist; `onboard` offers them as a diff.
+- Auto-merge needs the merge-gate line in your allowlist; `onboard` offers it as a diff.
 - `onboard` can make AGENTS.md the source of truth (CLAUDE.md becomes `@AGENTS.md`) and keeps a managed super-board section in it. Plugin install: the command is `/super-board:super-board onboard`, and its 🔍 Checks step installs the missing scripts, workflows and hooks.
 - Bug sources take any extra source in onboard — a link, app name, API URL, MCP server or command — proven readable (read-only) before it is saved; `/super-collect` runs it like the built-ins.
 - Testing a live site with no repo is not a board: `/super-qa <url>` runs on its own.
@@ -113,7 +115,7 @@ Lane lifecycles are identical in both.
 The legacy dispatcher refuses to run (exit 78) unless the config sets it.
 
 **Stop and resume.** `/super-board stop` posts a "stopped mid-flight" comment on every in-flight
-issue and PR (lane, last commit, resume hint), releases the assignee mutex, and kills workers and
+ticket and PR (lane, last commit, resume hint), releases the claim (assignee, or the Azure DevOps claim tag), and kills workers and
 the dispatcher. Resume with `/super-board run <slug>`. A card stranded in `Building` by a stopped
 wave goes back to `Ready`; its branch is kept and the next Builder continues on it.
 
@@ -121,8 +123,8 @@ wave goes back to `Ready`; its branch is kept and the next Builder continues on 
 
 **Waves are sized by your dependency graph, not by a worker count.** Before each wave the planner
 reads every card's `## Blocked by` section and dispatches every Ready card whose blockers have all
-closed: 3 on a chained board, 19 on a wide one. It also **sweeps `Blocked`**: a card parked on an
-issue that has since closed comes back to `Ready` on its own. A dependency line it cannot read
+closed: 3 on a chained board, 19 on a wide one. It also **sweeps `Blocked`**: a card parked on a
+ticket that has since closed comes back to `Ready` on its own. A dependency line it cannot read
 confidently is never treated as free; it is flagged for a human.
 
 **Usage guard.** Before each wave the orchestrator runs `super-board-usage.sh check`. At or over
@@ -130,10 +132,10 @@ confidently is never treated as free; it is flagged for a human.
 running one finish and posts a resume note. It needs the status line to record usage (pack README
 → Setup notes), works on Pro/Max only, and an unknown reading never halts a run.
 
-**Nothing merges on GitHub's word.** `mergeable: CLEAN` only means the text does not conflict. The
+**Nothing merges on the provider's word.** GitHub's `mergeable: CLEAN` (Azure DevOps: `mergeStatus`) only means the text does not conflict. The
 merge gate takes a lock, checks the PR head is still the commit the Reviewer reviewed, merges the
-current base into a scratch worktree, runs your `verify_commands`, and only then squash-merges with
-`--match-head-commit`. A branch that stopped compiling while it waited goes back to Build for a
+current base into a scratch worktree, runs your `verify_commands`, and only then squash-merges pinned
+to the reviewed head (`--match-head-commit` on GitHub, `lastMergeSourceCommit` on Azure DevOps). A branch that stopped compiling while it waited goes back to Build for a
 rebase pass; a push after review voids the evidence and the card gets a fresh review.
 
 ### Which skills each lane loads
@@ -147,7 +149,7 @@ user a question: the run is unattended, and a skill that waits is a skill that h
 | **super-qa** | `ask-matt` · `tdd` · `diagnosing-bugs` · the same testing skills |
 | **super-review** | `code-review` (Standards + Spec, merge-base as fixed point) · `codebase-design` · `ponytail:ponytail-review` |
 
-Assignment happens when the ticket is written, not at runtime: super-build routes on the issue's
+Assignment happens when the ticket is written, not at runtime: super-build routes on the ticket's
 **type label**, the same `bug` / `feature` / `ux` / `tests` / `docs` / `tech-debt` labels super-qa
 files, plus `refactor` from super-review. A `Skills:` line in a ticket body replaces its label's row.
 
@@ -192,7 +194,7 @@ Review run in parallel.
 ## Safety controls
 
 **Worker storms**, 30 `Ready` cards starting 30 Builders, were the failure that bit early users of
-the headless backend. On `claude-p`, six gates stand in the way before any spawn:
+the headless backend. On `claude-p` (legacy, GitHub only), six gates stand in the way before any spawn:
 
 ```
   1  orphan scan ........... workers alive from a crashed run?  → refuse to start
@@ -205,8 +207,8 @@ the headless backend. On `claude-p`, six gates stand in the way before any spawn
 
 The 120-second tick holds ProjectsV2 query cost (~103 GraphQL points per tick) to about 3.1k/hr
 against a 5k budget; raise `tick_seconds` if you have headroom. The workflow backend has its own
-equivalents: a wave lock that keeps the two backends from running at once, assignee claims, a
-crash-recovery sweep of leaked assignees, the rate guard and the usage guard
+equivalents: a wave lock that keeps the two backends from running at once, claims (assignee, or the
+Azure DevOps claim tag), a crash-recovery sweep of leaked claims, the rate guard and the usage guard
 (`references/run-workflow.md`).
 
 Guard hooks, installed by `install.sh` unless `--no-hooks`: worktrees only under
@@ -251,6 +253,10 @@ Minimal config at `.claude/super-board/configs/<slug>.json`:
   "notifications": { "bot_identity": "your-bot-login" }
 }
 ```
+
+On Azure DevOps the config sets `"provider": "azure-devops"` and an `ado` block (organization,
+project, team, board, repository, approvers) in place of `project`; see
+`skills/super-board/references/providers.md` → "Config".
 
 ```
   worker_backend        workflow | claude-p
@@ -309,8 +315,9 @@ between independently deployed services, which a single-app repo does not have.
 
 - Run `/super-board lint` first and fix what it flags.
 - Start with `human_approves_merge: true` and a few cards; read the PR comments each lane leaves.
-- Set `verify_commands` before you allow auto-merge, and add `Bash(gh pr merge:*)` to the
-  allowlist only when you mean it: it removes the last human gate.
+- Set `verify_commands` before you allow auto-merge, and add the merge-gate line
+  (`Bash(bash .claude/bin/super-board-merge-gate.sh:*)`) to the allowlist only when you mean it: it
+  removes the last human gate.
 - Label a few cards `qa` on code that already exists before letting Builders loose.
 - Run `/super-collect` in its default dry-run before `--yes`.
 

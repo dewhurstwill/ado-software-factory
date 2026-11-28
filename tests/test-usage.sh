@@ -3,6 +3,7 @@
 # before each wave. No network: the status-line JSON is fed on stdin and the
 # snapshot lives in a temp file.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")"
 U="../scripts/super-board-usage.sh"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT

@@ -9,6 +9,7 @@
 # the base branch red. These tests pin the two properties that prevent it — one
 # merge at a time, and the proof happens under the lock.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")"
 GATE="../scripts/super-board-merge-gate.sh"
 
@@ -191,7 +192,7 @@ printf -- '- 413 shows the size message\nCloses #1\n' > "$TMP/msg.md"
 RC=0; STUB_OID="$SHA" gate --expect-head "$SHA" --subject "🐛 [fix] receipts: show a size error" --body-file "$TMP/msg.md" >/dev/null 2>&1 || RC=$?
 [ "$RC" -eq 0 ] || fail "a merge with a subject should exit 0, got $RC"
 grep -q -- "--subject 🐛 \[fix\] receipts: show a size error" "$GH_LOG" || fail "merge must pass --subject, got: $(cat "$GH_LOG")"
-grep -q -- "--body-file $TMP/msg.md" "$GH_LOG" || fail "merge must pass --body-file, got: $(cat "$GH_LOG")"
+grep -qF -e "--body-file $TMP/msg.md" -e "--body-file $(sb_native "$TMP")/msg.md" "$GH_LOG" || fail "merge must pass --body-file, got: $(cat "$GH_LOG")"
 RC=0; STUB_OID="$SHA" gate --expect-head "$SHA" --body-file /nope.md >/dev/null 2>&1 || RC=$?
 [ "$RC" -eq 66 ] || fail "an unreadable --body-file should exit 66, got $RC"
 teardown
@@ -226,7 +227,7 @@ teardown
 #      merge that already happened.
 head_setup
 mkdir -p "$TMP/.claude/hooks"
-printf 'import sys\nopen("%s/cleanup.args","w").write(" ".join(sys.argv[1:]))\nsys.exit(1)\n' "$TMP" \
+printf 'import sys\nopen("%s/cleanup.args","w").write(" ".join(sys.argv[1:]))\nsys.exit(1)\n' "$(sb_native "$TMP")" \
   > "$TMP/.claude/hooks/cleanup-wt.py"
 RC=0; STUB_OID="$SHA" gate --expect-head "$SHA" >/dev/null 2>&1 || RC=$?
 [ "$RC" -eq 0 ] || fail "a failing cleanup must not fail the merge, got $RC"
@@ -441,6 +442,34 @@ head_setup
 cfgset '.merge_policy = {always_human: {}}'
 RC=0; STUB_OID="$SHA" STUB_META="$(meta money src/x.ts)" gate --expect-head "$SHA" >/dev/null 2>&1 || RC=$?
 [ "$RC" -eq 0 ] || fail "always_human {} should let a money label merge, got $RC"
+teardown
+
+# 17b — board-config: a PR that touches the board's own config folder always waits for a human
+#       (exit 7, the category is named, no merge), under the defaults, under a custom
+#       always_human, and under always_human {} (the guard cannot be switched off from the file
+#       it guards). The .agents/ mirror and a sub-folder of a monorepo count too.
+for files in .claude/super-board/configs/app.json .agents/super-board/configs/app.json \
+             packages/web/.claude/super-board/configs/app.json; do
+  for cust in '.' '.merge_policy = {always_human: {}}' '.merge_policy = {always_human: {money: {labels: ["x"]}}}'; do
+    head_setup
+    cfgset "$cust"
+    RC=0; OUT=$(STUB_OID="$SHA" STUB_META="$(meta "" "$files")" gate --expect-head "$SHA" 2>/dev/null) || RC=$?
+    [ "$RC" -eq 7 ] || fail "a PR touching $files must exit 7 (cfg: $cust), got $RC"
+    echo "$OUT" | grep -q "^human-gate: board-config — path $files" || fail "exit 7 must name board-config, got: $OUT"
+    grep -q '^pr merge' "$GH_LOG" && fail "a board-config PR must not merge"
+    teardown
+  done
+done
+# ...and a look-alike path is not board config.
+head_setup
+RC=0; STUB_OID="$SHA" STUB_META="$(meta "" docs/super-board/configs-notes.md,.claude/super-board/inflight/x.json)" gate --expect-head "$SHA" >/dev/null 2>&1 || RC=$?
+[ "$RC" -eq 0 ] || fail "paths outside the configs folder must still merge, got $RC"
+teardown
+# A board-config rule of the owner's own replaces the built-in one.
+head_setup
+cfgset '.merge_policy = {always_human: {"board-config": {paths: ["never/**"]}}}'
+RC=0; STUB_OID="$SHA" STUB_META="$(meta "" .claude/super-board/configs/app.json)" gate --expect-head "$SHA" >/dev/null 2>&1 || RC=$?
+[ "$RC" -eq 0 ] || fail "an explicit board-config rule replaces the built-in one, got $RC"
 teardown
 
 # 18 — a migration whose target env is allowed: the gate runs the configured

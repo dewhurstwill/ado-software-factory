@@ -3,6 +3,7 @@
 # step: detection, backup, the managed block (nothing outside the markers ever
 # changes), the CLAUDE.md pointer, rule-unit splitting and the lossless check.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")"
 AM="$PWD/../scripts/super-board-agents-md.py"
 fail() { echo "FAIL: $1" >&2; exit 1; }

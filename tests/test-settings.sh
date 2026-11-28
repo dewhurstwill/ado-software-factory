@@ -2,6 +2,7 @@
 # Tests super-board-settings.py allow — onboard's Permissions step: print the diff,
 # write only after approval, keep every existing key, add each rule once.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")"
 S="$PWD/../scripts/super-board-settings.py"
 fail() { echo "FAIL: $1" >&2; exit 1; }

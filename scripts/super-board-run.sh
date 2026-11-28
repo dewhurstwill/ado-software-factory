@@ -25,12 +25,14 @@
 #      Config: no_progress_cycles (default 6), max_dispatches (default 0 = unlimited).
 #
 # PID namespace trap (Git Bash / MSYS, issue #13): `kill -0` inside this script checks MSYS-namespace
-# PIDs; PowerShell `Get-Process` checks Windows-namespace PIDs. The two disagree about the same
+# PIDs; PowerShell `Get-Process` checks Windows-namespace PIDs. A lock file may hold either (the Codex
+# wave's Python writes Windows PIDs), so lock liveness goes through sb_pid_alive (compat.sh). The two disagree about the same
 # process — a live worker can look dead to Windows tooling and vice versa. Always diagnose liveness
 # with the same tool family that recorded the PID. Workers are started with `nohup claude -p ... &`
 # (no subshell, no `exec` of a native PE), so `$!` names the worker itself rather than a bash stub.
 
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/super-board-compat.sh"  # Windows: jq/python3 shims; no-op elsewhere
 SB_GITHUB_READ="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/super-board-github-read.py"
 gh_checkpoint() { python3 "$SB_GITHUB_READ" --check || exit $?; }
 gh_write_once() {
@@ -87,6 +89,15 @@ WORKER_BACKEND=$(jq -r '.worker_backend // "workflow"' "$CONFIG_PATH")
 # card reaching Done, regardless of lane occupancy. MAX_DISPATCHES=0 disables the ceiling.
 NO_PROGRESS_CYCLES=$(jq -r '.no_progress_cycles // 6' "$CONFIG_PATH")
 MAX_DISPATCHES=$(jq -r '.max_dispatches // 0' "$CONFIG_PATH")
+
+# This legacy dispatcher drives GitHub only (`gh` for issues, PRs and the project board). Any other
+# provider refuses here, before any call, instead of half-working.
+PROVIDER=$(jq -r '.provider // "github"' "$CONFIG_PATH" | tr -d '\r')
+if [ "$PROVIDER" != "github" ]; then
+  echo "🛑 board '${CONFIG_SLUG}' uses provider \"${PROVIDER}\"; the legacy claude-p dispatcher supports GitHub only." >&2
+  echo "    Run it in-session instead: /super-board run ${CONFIG_SLUG}  (the workflow backend; see references/run-workflow.md)" >&2
+  exit 78
+fi
 
 # Workflow is the default backend (v1.6.0). This legacy dispatcher only runs
 # when the config opts in explicitly — never by accident or stale habit.
@@ -258,7 +269,7 @@ issue_locked() {
   local issue="$1" lock="$INFLIGHT_DIR/$1"
   [ -f "$lock" ] || return 1
   read_lock "$issue"
-  if [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null; then
+  if [ -n "$PID" ] && sb_pid_alive "$PID"; then
     return 0
   fi
   rm -f "$lock"
@@ -475,7 +486,7 @@ reap_finished_locks() {
     # would dissolve the backend mutual exclusion mid-run.
     case "$issue" in *[!0-9]*|'') continue ;; esac
     read_lock "$issue"
-    if [ -z "$PID" ] || ! kill -0 "$PID" 2>/dev/null; then
+    if [ -z "$PID" ] || ! sb_pid_alive "$PID"; then
       gh_checkpoint
       if [ -n "$BOT_LOGIN" ]; then
         gh_checkpoint

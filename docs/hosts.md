@@ -5,11 +5,11 @@ super-board runs inside an agent host: the CLI whose session types `/super-board
 
 | Host value | Tested version | Start a run | Sign-in | Gaps |
 |---|---|---|---|---|
-| `claude` | Claude Code 2.1.302 | `/super-board run` (Workflow backend) | `claude` then `/login`; `gh auth login` | None. The reference host. |
-| `codex` | codex-cli 0.160.0 | `/super-board run` inside Codex runs as `--codex`; from Claude, `/super-board run --codex` | `codex login`; `gh auth login` | No Workflow tool, so every lane is headless `codex exec`. Review runs only with explicit `--codex` (a host-switched plain `run` counts). No Claude usage guard. |
-| `opencode` | OpenCode v2.0.22 | Not supported yet: the run halts with a host-selection request | `opencode auth login`; `gh auth login` | No OpenCode lane backend yet. `permission.external_directory: deny` is not enforced in v2.0.22 (`patch` still writes outside the repo), so OpenCode runs stay attended-only once a backend lands. |
+| `claude` | Claude Code 2.1.302 | `/super-board run` (Workflow backend) | `claude` then `/login`; `gh auth login` (GitHub) or an Azure DevOps PAT / `az login` | None. The reference host. |
+| `codex` | codex-cli 0.160.0 | `/super-board run` inside Codex runs as `--codex`; from Claude, `/super-board run --codex` | `codex login`; `gh auth login` (GitHub) or an Azure DevOps PAT / `az login` | No Workflow tool, so every lane is headless `codex exec`. Review runs only with explicit `--codex` (a host-switched plain `run` counts). No Claude usage guard. |
+| `opencode` | OpenCode v2.0.22 | Not supported yet: the run halts with a host-selection request | `opencode auth login`; `gh auth login` (GitHub) or an Azure DevOps PAT / `az login` | No OpenCode lane backend yet. `permission.external_directory: deny` is not enforced in v2.0.22 (`patch` still writes outside the repo), so OpenCode runs stay attended-only once a backend lands. |
 
-Every host also needs `gh`, `jq`, bash 3.2+ and Python 3.9+.
+Every host also needs `jq`, bash 3.2+ and Python 3.9+, plus `gh` on GitHub (Azure DevOps needs no CLI: a PAT in `AZURE_DEVOPS_EXT_PAT`, or `az login`).
 
 ## How the host is picked
 

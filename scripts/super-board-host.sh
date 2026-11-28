@@ -29,6 +29,7 @@
 # SUPER_BOARD_HOST=claude|codex|opencode forces the answer (tests, or a host the check
 # misreads).
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/super-board-compat.sh"  # Windows: jq/python3 shims; no-op elsewhere
 
 config=
 case "${1:-}" in

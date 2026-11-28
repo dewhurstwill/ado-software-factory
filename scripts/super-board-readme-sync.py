@@ -115,6 +115,11 @@ def sync(text: str) -> str:
     return text
 
 
+def write(path: Path, text: str) -> None:
+    with open(path, "w", encoding="utf-8", newline="\n") as stream:  # LF on Windows too
+        stream.write(text)
+
+
 def edited_skill_file() -> bool:
     """PostToolUse payload on stdin → was the edited path inside this pack's skills/?"""
     try:
@@ -138,7 +143,7 @@ def main() -> int:
             try:
                 fresh = sync(README.read_text(encoding="utf-8"))
                 if fresh != README.read_text(encoding="utf-8"):
-                    README.write_text(fresh, encoding="utf-8")
+                    write(README, fresh)
             except BaseException:  # a hook never fails the edit it follows
                 pass
         return 0
@@ -150,7 +155,7 @@ def main() -> int:
     if check:
         print("readme-sync: README.md skill tables are stale — run scripts/super-board-readme-sync.py", file=sys.stderr)
         return 1
-    README.write_text(fresh, encoding="utf-8")
+    write(README, fresh)
     print("readme-sync: README.md updated")
     return 0
 

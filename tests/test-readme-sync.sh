@@ -2,6 +2,7 @@
 # Tests scripts/super-board-readme-sync.py and hooks/pre-commit-readme.sh against
 # a throwaway copy of the pack, so the real README is never touched.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")/.."
 PACK=$PWD
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -71,13 +72,13 @@ rm -rf "$T"; ok
 # 4 — --hook syncs only for an edit under skills/, and always exits 0.
 copy
 fam 'd["you_type"]["skills"]["visual"] = "Hook brief."'
-printf '{"tool_input":{"file_path":"%s/docs/x.md"}}' "$T" | python3 "$SYNC" --hook || fail "--hook must exit 0"
+printf '{"tool_input":{"file_path":"%s/docs/x.md"}}' "$(sb_native "$T")" | python3 "$SYNC" --hook || fail "--hook must exit 0"
 grep -q "Hook brief." "$T/README.md" && fail "--hook must not sync for a path outside skills/"
 printf 'not json' | python3 "$SYNC" --hook || fail "--hook must exit 0 on bad input"
-printf '{"tool_input":{"file_path":"%s/skills/visual/SKILL.md"}}' "$T" | python3 "$SYNC" --hook || fail "--hook must exit 0"
+printf '{"tool_input":{"file_path":"%s/skills/visual/SKILL.md"}}' "$(sb_native "$T")" | python3 "$SYNC" --hook || fail "--hook must exit 0"
 grep -q "Hook brief." "$T/README.md" || fail "--hook should sync after an edit under skills/"
 mkdir -p "$T/skills/orphan"; printf -- '---\nname: orphan\ndescription: x\n---\n' > "$T/skills/orphan/SKILL.md"
-printf '{"tool_input":{"file_path":"%s/skills/orphan/SKILL.md"}}' "$T" | python3 "$SYNC" --hook 2>/dev/null || fail "--hook must exit 0 even on an input error"
+printf '{"tool_input":{"file_path":"%s/skills/orphan/SKILL.md"}}' "$(sb_native "$T")" | python3 "$SYNC" --hook 2>/dev/null || fail "--hook must exit 0 even on an input error"
 rm -rf "$T"; ok
 
 # 5 — pre-commit-readme.sh: a staged skill change with a stale README stops the

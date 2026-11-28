@@ -23,7 +23,7 @@ is skipped; the adapter never clears or reaps markers.
 
 The adapter validates these references and checks commit existence and ancestry
 against the **locally recorded remote base**. It does not independently query
-GitHub, fetch the base, re-run tests, or certify the contents of a caller's report.
+the provider, fetch the base, re-run tests, or certify the contents of a caller's report.
 Missing or stale final evidence means skipped, not calibrated.
 
 ## Prepare a bounded receipt

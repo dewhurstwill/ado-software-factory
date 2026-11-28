@@ -3,6 +3,7 @@
 # A deny prints a PreToolUse permissionDecision; an allow prints nothing.
 # Fake keys are assembled at runtime so this file never holds a key-shaped literal.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")"
 H="../hooks"
 PASS=0
@@ -108,7 +109,9 @@ pp allow 'git push --force-with-lease origin feat'      "force push to feature b
 pp allow 'git push'                                     "bare push on a feature branch"
 pp allow 'git push origin --tags'                       "tags only"
 pp allow 'echo "git push --force origin main"'          "quoted text is not a command"
-OUT=$(printf '%s' "$(bash_cmd 'git push --force origin main' "$REPO")" | SB_ALLOW_PROTECTED_PUSH=1 CLAUDE_PROJECT_DIR="$REPO" python3 "$H/guard-protected-push.py")
+# A here-string, not a pipe: the guard exits before reading stdin, and a writer racing
+# that exit gets SIGPIPE under pipefail (seen on Windows).
+OUT=$(SB_ALLOW_PROTECTED_PUSH=1 CLAUDE_PROJECT_DIR="$REPO" python3 "$H/guard-protected-push.py" <<<"$(bash_cmd 'git push --force origin main' "$REPO")")
 [ -z "$OUT" ] || fail "SB_ALLOW_PROTECTED_PUSH=1 should turn the guard off"; PASS=$((PASS + 1))
 rm -rf "$REPO"
 
@@ -186,5 +189,35 @@ gate 0 "pushed change no longer counts"
 git -C "$G" checkout -q -b feat; echo more >> "$G/skills/a/SKILL.md"; git -C "$G" commit -qam "on feat"
 gate 2 "local branch with no upstream: commits since main count"
 rm -rf "$G" "$G.origin" "$G.err"
+
+# ---- the wired commands themselves ---------------------------------------------
+# Claude Code runs each settings `command` with `sh -c` (Git Bash on Windows), with
+# CLAUDE_PROJECT_DIR in the OS's own path form and none of this suite's shims. Every
+# command in both snippets must start its guard there and answer.
+W=$(mktemp -d); mkdir -p "$W/proj/.claude/hooks"
+cp "$H"/*.py "$W/proj/.claude/hooks/"
+git init -q "$W/proj"
+WPROJ=$(sb_native "$W/proj")
+wired() {  # $1 command, $2 payload → stdout; fails the suite on a non-zero exit or stderr
+  local out err rc=0
+  out=$(printf '%s' "$2" | CLAUDE_PROJECT_DIR="$WPROJ" bash --norc -c 'unset -f python3 jq; eval "$1"' _ "$1" 2>"$W/err") || rc=$?
+  err=$(cat "$W/err")
+  [ "$rc" -eq 0 ] && [ -z "$err" ] || fail "wired hook did not run cleanly (exit $rc): $1 :: $err"
+  printf '%s' "$out"
+}
+n=0
+while IFS= read -r cmd; do
+  case "$cmd" in *cleanup-wt.py*) continue ;; esac  # SessionStart; exercised by test-cleanup-wt.sh
+  out=$(wired "$cmd" "$(bash_cmd 'git status' "$WPROJ")")
+  [ -z "$out" ] || fail "wired hook denied a harmless command: $cmd :: $out"
+  n=$((n + 1)); PASS=$((PASS + 1))
+done < <(jq -r '.hooks[][].hooks[].command' ../hooks/settings-snippet.json ../hooks/settings-protect-main.json)
+[ "$n" -ge 5 ] || fail "expected the five PreToolUse/PostToolUse guard commands, ran $n"
+DEL=$(jq -r '.hooks.PreToolUse[].hooks[].command | select(contains("guard-delete-outside"))' ../hooks/settings-snippet.json)
+out=$(wired "$DEL" "$(bash_cmd 'rm -rf ~' "$WPROJ")")
+printf '%s' "$out" | jq -e '.hookSpecificOutput.permissionDecision == "deny"' >/dev/null \
+  || fail "the wired delete guard must deny rm -rf ~, got '$out'"
+PASS=$((PASS + 1))
+rm -rf "$W"
 
 echo "PASS: test-guard-hooks.sh ($PASS cases)"

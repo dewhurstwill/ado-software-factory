@@ -21,6 +21,8 @@ moves a card to `Ready`. Per project only: it reads the active project's super-b
 files onto that project's board. The whole rule in plain words:
 [routing](../../docs/super-board/routing.md).
 
+**Providers.** Tickets, the board and PRs go through one command on GitHub and Azure DevOps alike: `python3 .claude/bin/super-board-forge.py --config <cfg> <verb>` (written `forge <verb>` below; always type the full command). [providers.md](../super-board/references/providers.md) lists every verb, its output and exit codes. Nouns: **ticket** = GitHub issue / Azure DevOps work item; **label** = label / work item tag; **board** = the GitHub Project (`project.owner` + `project.number`) / the team's Azure DevOps board (`ado.organization`, `ado.project`, `ado.team`, `ado.board`). The `github` source keeps its name on both: it reads the board's own tracker.
+
 ## Invocation
 
 | Command | Does |
@@ -47,8 +49,8 @@ No job, cadence or scheduler is created by this skill.
    requested source → stop and point at `/super-board onboard` (its collect step sets sources up).
 2. Secrets come only from `.env` (nearest walking up): `SENTRY_AUTH_TOKEN`,
    `POSTHOG_PERSONAL_API_KEY`. Never print, echo or paste them.
-3. Source `.claude/bin/super-board-gh-guard.sh`; `sb_gh_guard_check 200` before each gh burst.
-4. Snapshot the board through `.claude/bin/super-board-github-read.py --kind items -- project item-list <number> --owner <owner> --format json --limit 500`. A count mismatch or read failure halts; never treat a partial board as complete.
+3. Source `.claude/bin/super-board-gh-guard.sh`; `sb_gh_guard_check 200` before each burst of provider calls.
+4. Snapshot the board with `forge board items` (`{items, totalCount}`; same read retry and halt). A count mismatch (`totalCount` ≠ the number of items) or read failure halts (79); never treat a partial board as complete.
    It is the dedupe set for verification and the "not on the board" set for `github`.
 
 Scripts live in `.claude/skills/super-collect/scripts/` (`S=` below). Every fetcher takes
@@ -62,8 +64,8 @@ Scripts live in `.claude/skills/super-collect/scripts/` (`S=` below). Every fetc
 |---|---|---|
 | `sentry` | `python3 $S/collect_sentry.py list --since <w>` — Sentry REST, Bearer token (scopes `event:read project:read`): org issues list, then `event <id>` / `tags <id>` for evidence | one unresolved issue → `bug`, fp `err|sentry|<id>` |
 | `posthog` | `python3 $S/collect_posthog.py list --since <w>` — HogQL `POST {host}/api/projects/{id}/query/` | one signal group → see table below |
-| `github` | Read open candidates with `gh issue list --state open --json number,title,body,labels,url --limit 300` (a full 300 is capped coverage, not a complete repo inventory), minus issues on the board and `source:*` labels | real work → **adopt** (`--adopt <n>`), never copied |
-| `prs` | `python3 $S/collect_prs.py list --since <w>` — one GraphQL search `is:pr is:merged merged:>=DATE`, paginated, with comments, reviews and review threads (human and bot), super-review reports flagged (`<!-- super-review:report -->`) | one recurring root cause → `fix` / `refactor` / `feature`, fp `prs|<boundary>|<cause>` |
+| `github` | Read open candidates with `forge ticket list --state open --limit 300` (`number,title,body,labels,url`…; a full 300 is capped coverage, not a complete repo inventory), minus tickets on the board and `source:*` labels | real work → **adopt** (`--adopt <n>`), never copied |
+| `prs` | `python3 $S/collect_prs.py list --since <w>` — GitHub: one GraphQL search `is:pr is:merged merged:>=DATE`, paginated; Azure DevOps: `forge pr merged` plus `forge pr threads` per PR (no review objects, `reviews` empty) — with comments, reviews and review threads (human and bot), super-review reports flagged (`<!-- super-review:report -->`) | one recurring root cause → `fix` / `refactor` / `feature`, fp `prs|<boundary>|<cause>` |
 | `architecture` | read-only finder sub-agent (below) | one finding → `refactor`, fp `arch|<module>|<problem>` |
 | custom (`collect.custom[]`) | `python3 $S/collect_custom.py list --since <w>` — http and cli sources run in the script; an `mcp` source comes back `status: agent`: call that server's read/list tool yourself (read-only), then pipe its JSON into `collect_custom.py normalize --name <n>` | one candidate → `bug` (errors, incidents) or `feature` (requests), `--source custom`, fp `custom|<name>|<key>` (the script emits it) |
 
@@ -141,12 +143,14 @@ and the window; nothing from other candidates. It checks, in order:
 1. **Real** — the evidence holds up: open the Sentry event / replay / PR comment / code it cites.
 2. **Still happening** — `collect_sentry.py check <id> --after <window start>` (`seenAfter`), or
    `collect_posthog.py check <signal> <key> --after <date>` (`stopped`, `issueStatus`).
-3. **Already fixed** — a closed issue or merged PR that matches
-   (`gh pr list --state merged --search "<symptom> in:title,body"`, plus the fingerprint), and
+3. **Already fixed** — a closed ticket or merged PR that matches
+   (`forge pr list --state merged --limit 100`, filtered locally on title and body:
+   `jq --arg w "<symptom>" '[.[] | select((.title + " " + .body) | ascii_downcase | contains($w | ascii_downcase))]'`,
+   plus the fingerprint), and
    then from the fix's merge date or release: Sentry `status: resolved` with `seenAfterRelease:
    false`; PostHog `stopped: true` (zero hits and ≥ 3 days of traffic since the merge; with
    `version_property`, no hits on versions after the fix). A refactor already landed counts too.
-4. **Duplicate** — same symptom + same route/module as a card in the snapshot or an open issue.
+4. **Duplicate** — same symptom + same route/module as a card in the snapshot or an open ticket.
 
 Verdict schema: `{verdict: file | drop-fixed | drop-stale | drop-noise | duplicate | needs-triage,
 evidence: [links], note}`. `duplicate` names the card; the filer then comments on it. **Unclear is
@@ -186,14 +190,14 @@ missing) or `--direct` → skip to **Filing** below and print the `reason` line 
    - **6+ tickets → super-board**: add each ticket to Backlog with
      `$S/super-collect-file.sh --config <cfg> --adopt <n> --type bug|feature|refactor --yes`,
      then `/super-board lint`. Build → QA (with the security check) → Review → merge gate.
-   - Tickets in a local tracker (files, not GitHub issues) cannot go on the board: report
+   - Tickets in a local tracker (files, not tickets on the board's provider) cannot go on the board: report
      their paths and stop.
 
 With `--yes` and no one to answer `/to-spec` or `/to-tickets` (a scheduler), use `--direct`.
 
 ## Filing
 
-The direct path (no planning chain, `--direct`, adopting a `github` issue, a duplicate's
+The direct path (no planning chain, `--direct`, adopting a `github` ticket, a duplicate's
 "Seen again" comment) and the 6+ adoption go through one script, which routes to the pack's filers:
 
 ```bash
@@ -213,8 +217,11 @@ $S/super-collect-file.sh --config <cfg> --adopt <n> --type <t> [--yes]
 - **Fingerprint per source** (the filer rejects a mismatch): sentry `err|sentry|<id>`, posthog
   `posthog|<signal>|<key>` (fetchers emit it) or `gap|<workflow>`, github `github|<n>`, prs
   `prs|<boundary>|<cause>`, architecture `arch|<module>|<problem>`, custom `custom|<name>|<key>`.
-- **Dedupe** uses complete guarded paginated issue history, exact-fingerprint, repo-wide, any label: an open hit gets a "Seen again" comment; a
-  closed-only hit is a **recurrence**, filed again naming the closed issue.
+- **Dedupe** uses complete guarded paginated ticket history (`forge ticket history`), exact-fingerprint, repo-wide, any label: an open hit gets a "Seen again" comment; a
+  closed-only hit is a **recurrence**, filed again naming the closed ticket. The filer writes the
+  fingerprint into the ticket body (a hidden comment on GitHub; on Azure DevOps, which strips HTML
+  comments from tickets, the visible footer line `- super-collect-fingerprint: <fp>`) — never
+  hand-write a fingerprint marker.
 - **Column** is the board's holding column (`Backlog`, else `Todo`/`To do`/`Triage`/`Inbox`); none
   → refused (exit 65).
 - The same-host repository lock serializes collector calls; digest receipts skip identical repeat comments. See [state and recovery](references/scheduled-intake.md).

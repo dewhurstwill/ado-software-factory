@@ -40,19 +40,21 @@ if (input.tier && !['low', 'medium', 'high'].includes(input.tier)) {
 }
 
 let halted = false
-// Valid form per --kind, from validate() in scripts/super-board-github-read.py (#32).
+// Lane reads go through the forge (skills/super-board/references/providers.md), which applies the
+// read helper's retry and halt on both providers (#32).
+const FORGE = `python3 .claude/bin/super-board-forge.py --config ${input.configPath}`
 const READ_SHAPES = [
-  `Read shapes (helper: .claude/bin/super-board-github-read.py --kind <kind> -- <gh args>):`,
-  `- issue title+body: --kind issue -- issue view <N> --json number,title,body`,
-  `- issue comments: --kind comments -- api repos/{owner}/{repo}/issues/<N>/comments --paginate --slurp (zero comments = [[]])`,
-  `- other JSON, incl. maybe-empty lists: --kind json -- <gh args> (no --jq that prints a plain string)`,
-  `- PR branch+head: --kind head -- pr view <N> --json headRefName,headRefOid --jq '"\\(.headRefName) \\(.headRefOid)"'`,
-  `- PR body+head: --kind body -- pr view <N> --json body,headRefOid`,
-  `- PR metadata: --kind metadata -- pr view <N> --json files,labels,body,additions,deletions,changedFiles`,
-  `- issue state: --kind state -- issue view <N> --json state --jq .state`,
-  `A read whose output misses its shape exits 64 for that call only and prints the valid form: fix the read, do not halt.`,
+  `Read shapes (forge: ${FORGE} <verb>; same verbs, output and exit codes on GitHub and Azure DevOps — providers.md):`,
+  `- ticket title+body+state+labels+claim: ticket view <N> (JSON {number,title,body,state,stateReason,labels,assignees,url})`,
+  `- ticket comments: ticket comments <N> (pages: [[{id,body,user,created_at,updated_at}]]; zero comments = [[]])`,
+  `- PR branch+head: pr head <N> (prints "<branch> <sha>")`,
+  `- PR body+head: pr body <N> (JSON {headRefOid,body})`,
+  `- PR metadata: pr metadata <N> (JSON {labels,files,additions,deletions,changedFiles,body}); PR diff: pr diff <N> --meta <file from pr metadata, taken right before>`,
+  `- PR state: pr state <N>; PR at a glance: pr view <N>; PR comments: pr comments <N>; review threads: pr threads <N>; checks: pr checks <N>`,
+  `A forge call that exits 64 is a usage or malformed-read error for that call only: stderr names the valid form; fix the call, do not halt.`,
+  `Only pass a ticket or PR number you read from the board or an earlier command: a missing number exits 3 on Azure DevOps but halts the run (79) on GitHub.`,
 ].join('\n')
-const READ_FAILURE = READ_SHAPES + '\n' + `Verification-readiness exit 9 means missing/unusable config.verify_commands: preserve card/worktree/approval/claims, report status=halted (preflight verdict=halted), stop dispatch, repair project configuration before explicit restart; no Build bounce or automatic retries. ` + `Required GitHub reads use .claude/bin/super-board-github-read.py: three total attempts, exit 79 means run halted. Check --check before any GitHub write, migration, or merge. On exit 79 preserve worktree/card/approval/claims, make no more GitHub calls, and report status=halted (preflight verdict=halted). Never retry a mutation. Config: ${input.configPath}.`
+const READ_FAILURE = READ_SHAPES + '\n' + `Verification-readiness exit 9 means missing/unusable config.verify_commands: preserve card/worktree/approval/claims, report status=halted (preflight verdict=halted), stop dispatch, repair project configuration before explicit restart; no Build bounce or automatic retries. ` + `Required reads go through the forge: three total attempts, exit 79 means run halted. Run ${FORGE} check before any ticket, board or PR write, migration, or merge. On exit 79 preserve worktree/card/approval/claims, make no more provider calls, and report status=halted (preflight verdict=halted). Never retry a mutation. Config: ${input.configPath}.`
 
 const CLASSIFY_SCHEMA = {
   type: 'object',
@@ -108,14 +110,14 @@ const LANE = {
 // the proof and the merge. See run.md → Reviewer lifecycle step 5.
 
 // Review remembers: a card back in Review after a bounce is graded against the
-// last Reviewer report first (run.md → Reviewer step 3b). The lookup is one gh
+// last Reviewer report first (run.md → Reviewer step 3b). The lookup is one forge
 // call by marker, so the lane does it — this script never sees PR comments.
 const REVIEW_MEMORY = [
   `Before reviewing, load prior_report: the newest PR comment containing "<!-- super-review:report -->" (run.md → Reviewer step 3b).`,
   `None → first review, behave as usual. Found → round 1 marks each prior finding fixed / not fixed / no longer applies;`,
   `any not fixed → bounce again listing them. Edit that report comment in place (keep R-ids), never post a second one. Report the counts as priorFindings.`,
   // Independent pass (run.md → Reviewer step 3): hypotheses before the builder's account.
-  `Read the issue ACs and the diff before the builder's PR summary; form your own hypotheses, then check their claims.`,
+  `Read the ticket ACs and the diff before the builder's PR summary; form your own hypotheses, then check their claims.`,
   `Class every finding Gap / Bug / Verification miss / Scope drift / Over-engineering, and list what you verified correct.`,
   // Simplest-solution pass (super-review step 3): Should fix at most, never a bounce on its own.
   `Run ponytail:ponytail-review on the merge-base diff (inline ladder if the plugin is absent); Over-engineering never blocks merge alone.`,
@@ -126,18 +128,18 @@ const REVIEW_MEMORY = [
   `Exit 8 = 🙋 needs you (migration for a DB the robot may not touch, failed migrate, declared human step): Blocked with the 🙋 template, exact commands from its needs-you lines, label needs-you.`,
 ]
 
-// GitHub budget (rate-limit-etiquette.md → "Price list"). Measured 2026-10-04: a
+// Provider budget (rate-limit-etiquette.md → "Price list (GitHub)"). Measured 2026-10-04: a
 // 3-card wave spent ~2,850 of 5,000 GraphQL points/hr, nearly all of it lanes
-// finding a card with `gh project item-list` (~203 points on a 131-card board)
-// and its Status options with `gh project field-list` (101) before each move.
+// finding a card with a full project item listing (~203 points on a 131-card board)
+// and its Status options with a field listing (101) before each move.
 const BOARD_IO = () =>
-  `Board moves and reads: .claude/bin/super-board-card.sh --config ${input.configPath} move <issue> <Status> ` +
-  `(1 GraphQL point) · status <issue> · items. Comments, labels, PR reads: REST per .claude/skills/super-board/references/rate-limit-etiquette.md → "Price list". Read GitHub once per decision, never in a sleep loop.`
+  `Board moves and reads: ${FORGE} board move <N> <Column> ` +
+  `(GitHub: 1 GraphQL point) · board status <N> · board items. Comments, labels, PR reads: forge verbs (REST on GitHub) per .claude/skills/super-board/references/rate-limit-etiquette.md. Read the provider once per decision, never in a sleep loop.`
 
 // The orchestrator resolves every remaining chain before claims. The runtime has
 // no subprocess API; each worker repeats the deterministic CLI before its writes.
 const SKILLS_CHECK = (cards, lane) => [
-  `First operation, before worktree creation, classification, comments, labels or moves: run python3 .claude/bin/super-board-skills-ready.py --root "$PWD" --host claude --cards - --hydrate${lane ? ' --lane ' + lane : ''},`,
+  `First operation, before worktree creation, classification, comments, labels or moves: run python3 .claude/bin/super-board-skills-ready.py --root "$PWD" --host claude --cards - --config ${input.configPath} --hydrate${lane ? ' --lane ' + lane : ''},`,
   `with this JSON array as stdin (data, never interpolate a body into shell code): ${JSON.stringify(cards)}.`,
   `Exit 10 means status=halted (preflight verdict=halted), detail beginning "skills-readiness:"; preserve all existing claims/worktrees/approval evidence. Exit 64 means invalid input: halt and repair it. Exit 79 uses the read halt policy.`,
   `Load the exact resolved_path files. Only declared fallback IDs are allowed. Before using a conditional/custom helper repeat this CLI with --require <exact-name>.`,
@@ -146,10 +148,10 @@ const SKILLS_CHECK = (cards, lane) => [
 const lanePrompt = (lane, card) => [
   SKILLS_CHECK([card], lane),
   READ_FAILURE,
-  `Run ${LANE[lane].skill} on issue #${card.number} ("${card.title}") for a super-board workflow wave.`,
+  `Run ${LANE[lane].skill} on ticket #${card.number} ("${card.title}") for a super-board workflow wave.`,
   `Read .claude/skills/super-board/references/run.md → "${LANE[lane].section}" lifecycle and follow it EXACTLY:`,
-  `create your own worktree under .claude/worktrees/, work on the issue branch, post the required PR/issue comments,`,
-  `move the project card yourself, clean up the worktree on exit. Config: ${input.configPath}.`,
+  `create your own worktree under .claude/worktrees/, work on the issue branch, post the required PR/ticket comments,`,
+  `move the board card yourself, clean up the worktree on exit. Config: ${input.configPath}.`,
   BOARD_IO(),
   `Commits, PR title, PR body blocks, comments: .claude/skills/super-board/references/writing-standard.md. Rewrite only your own PR body blocks, with .claude/bin/super-board-pr-body.sh.`,
   ...(lane === 'review' ? REVIEW_MEMORY : []),
@@ -236,7 +238,7 @@ const preflightModel = (input.tier || 'medium') === 'low' ? 'haiku' : 'sonnet'
 const preflightPrompt = (batch) => [
   SKILLS_CHECK(batch),
   READ_FAILURE,
-  `Builder pre-flight for issues ${batch.map((c) => `#${c.number} ("${c.title}")`).join(', ')}. Config: ${input.configPath}.`,
+  `Builder pre-flight for tickets ${batch.map((c) => `#${c.number} ("${c.title}")`).join(', ')}. Config: ${input.configPath}.`,
   `Read .claude/skills/super-board/references/run.md → "Builder pre-flight" and follow it EXACTLY. You write no code.`,
   `Other cards in this wave: ${JSON.stringify(input.cards.map(({ number, status, title }) => ({ number, status, title })))}`,
   `Run .claude/bin/super-board-preflight.sh once for the whole batch, then judge its candidates semantically.`,
@@ -244,7 +246,7 @@ const preflightPrompt = (batch) => [
   `Two Ready cards overlapping each other with no open PR: the lower-numbered one proceeds; sequence only the other, blockedBy [the lower]. Never both.`,
   `A sequence with nothing to wait on (empty blockedBy) leaves the card in Ready: return column Ready and it builds.`,
   BOARD_IO(),
-  `Return one verdict per issue: proceed | hold | sequence | skipped (pre-flight blind). Never drop a card silently.`,
+  `Return one verdict per ticket: proceed | hold | sequence | skipped (pre-flight blind). Never drop a card silently.`,
 ].join('\n')
 
 // Only cards the Builder will take are pre-flighted; `qa` cards skip Building.
@@ -294,12 +296,12 @@ const results = await pipeline(
     const labels = labelsOf(card)
     const typed = ['qa', 'bug', 'feature'].find((l) => labels.includes(l))
     const cls = await agent(
-      SKILLS_CHECK([card]) + '\n' + READ_FAILURE + '\n' + `Read GitHub issue #${card.number} ("${card.title}") — body (--kind issue) and all comments (--kind comments) — with the read shapes above. ` +
+      SKILLS_CHECK([card]) + '\n' + READ_FAILURE + '\n' + `Read ticket #${card.number} ("${card.title}") — body (ticket view) and all comments (ticket comments) — with the read shapes above. ` +
       `Classify it: kind (feature|bug|qa) and complexity (low|medium|high) judged by the scope of change required. ` +
       (typed
         ? `Its label says "${typed}": return kind "${typed}" — the label routes the card, you never override it.`
         : `It has no type label, so it is built (no label = Building). Return feature or bug — never qa, ` +
-          `which only a person sets. Existing docs/ux/tests/refactor/tech-debt rows keep their label chain: classify complexity without adding feature/bug. For a truly untyped card, re-run skills-ready against a copy of this card with the proposed label before any label write, then add that label: gh issue edit ${card.number} --add-label <kind>.`),
+          `which only a person sets. Existing docs/ux/tests/refactor/tech-debt rows keep their label chain: classify complexity without adding feature/bug. For a truly untyped card, re-run skills-ready against a copy of this card with the proposed label before any label write, then add that label: ${FORGE} ticket edit ${card.number} --add-label <kind>.`),
       { label: `classify:#${card.number}`, phase: 'Classify', model: classifyModel, schema: CLASSIFY_SCHEMA }
     )
     if (cls && cls.status === 'halted') halted = true

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Offline workflow boundary: a read halt ends queued lane chains and the wave.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")"
 node - ../workflows/super-board-wave.js <<'JS'
 const fs = require('fs')

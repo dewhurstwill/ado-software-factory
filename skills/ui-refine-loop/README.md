@@ -15,7 +15,7 @@ Adapted from BookKeepingApp refine-loop.
 - **Scores visual quality, not Nielsen.** The score is design /20 plus audit /20 (out of 40), with a better/same/worse call against round-0.
 - **Stops early.** The default is 5 rounds. It stops as soon as two checks in a row find no P0 or P1, or after two reverts in a row.
 - **Grades its own work.** A fresh finish reviewer grades each fix fixed, partial or not-fixed from the pixels.
-- **Opens a draft PR.** The PR has a Before | After table whose images are committed to the branch and linked by raw GitHub URLs, plus the score line and the grades, in plain words (via `humanizer`). It never merges and never pushes to your base branch.
+- **Opens a draft PR.** The PR has a Before | After table whose images are committed to the branch and linked by raw GitHub URLs (GitHub remotes only), plus the score line and the grades, in plain words (via `humanizer`). It never merges and never pushes to your base branch.
 
 ## When To Use It
 
@@ -36,7 +36,7 @@ Standalone only: you start it. The super-board lanes never run it.
 
 ## Install
 
-Ships in the super-board pack. Copy `skills/ui-refine-loop/` to `.claude/skills/ui-refine-loop/` and `workflows/ui-refine-loop.js` to `.claude/workflows/`. You need `git`, `node`, `gh`, and Playwright resolvable from your repo (`npx playwright install chromium`).
+Ships in the super-board pack. Copy `skills/ui-refine-loop/` to `.claude/skills/ui-refine-loop/` and `workflows/ui-refine-loop.js` to `.claude/workflows/`. You need `git`, `node`, access to the board's provider (`gh` on GitHub, an Azure DevOps token otherwise), and Playwright resolvable from your repo (`npx playwright install chromium`).
 
 **Impeccable** is strongly recommended. Both layouts are detected: v4.4+ (`scripts/impeccable` launcher) and v4.0.x (`node scripts/detect.mjs`). Detection looks in `.claude/skills` and `.agents/skills` of the repo and its parents, then `~`. Without Impeccable the loop warns loudly and falls back to a built-in rubric. If your app needs a sign-in, data states or an unusual dev command, add a `refine` block to your super-board config (`references/config.md`).
 

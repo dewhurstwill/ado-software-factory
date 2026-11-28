@@ -5,6 +5,7 @@
 # The wave script is a workflow body (top-level await + return), not a module,
 # so plain `node --check` rejects it. This test is also its syntax check.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")"
 
 node - ../workflows/super-board-wave.js <<'JS'

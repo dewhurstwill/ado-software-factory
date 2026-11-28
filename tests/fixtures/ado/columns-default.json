@@ -1,0 +1,50 @@
+{
+  "continuation_token": null,
+  "count": 4,
+  "value": [
+    {
+      "columnType": "incoming",
+      "id": "11111111-0000-0000-0000-000000000001",
+      "itemLimit": 0,
+      "name": "New",
+      "stateMappings": {
+        "Bug": "New",
+        "User Story": "New"
+      }
+    },
+    {
+      "columnType": "inProgress",
+      "description": "",
+      "id": "11111111-0000-0000-0000-000000000002",
+      "isSplit": false,
+      "itemLimit": 5,
+      "name": "Active",
+      "stateMappings": {
+        "Bug": "Active",
+        "User Story": "Active"
+      }
+    },
+    {
+      "columnType": "inProgress",
+      "description": "",
+      "id": "11111111-0000-0000-0000-000000000003",
+      "isSplit": false,
+      "itemLimit": 5,
+      "name": "Resolved",
+      "stateMappings": {
+        "Bug": "Resolved",
+        "User Story": "Resolved"
+      }
+    },
+    {
+      "columnType": "outgoing",
+      "id": "11111111-0000-0000-0000-000000000004",
+      "itemLimit": 0,
+      "name": "Closed",
+      "stateMappings": {
+        "Bug": "Closed",
+        "User Story": "Closed"
+      }
+    }
+  ]
+}

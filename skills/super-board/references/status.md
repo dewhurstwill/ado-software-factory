@@ -1,7 +1,7 @@
 # `super-board status` — read-only live snapshot
 
 > This is the **only read-only verb** in the `super-board` skill. It performs
-> no GitHub mutations and is safe to invoke during a headless `super-board run`.
+> no board, ticket or PR mutations (GitHub or Azure DevOps) and is safe to invoke during a headless `super-board run`.
 
 ---
 
@@ -50,7 +50,8 @@ originally shipped with: a fixed 80-column Kanban plus dedicated
 Model-rendering all of that token-by-token takes ≈3 min per invocation;
 the Python script renders the same template in ≈1.3 s (≈150× faster),
 so the richer view stays usable in practice. Pure Python 3 stdlib +
-`gh` CLI; no `jq`, no bash — runs on macOS, Linux, and Windows alike.
+`gh` CLI on GitHub (Azure DevOps: the forge's backend, loaded in-process, no `gh`);
+no `jq`, no bash — runs on macOS, Linux, and Windows alike.
 
 Exit codes the orchestrator should respect:
 
@@ -58,11 +59,11 @@ Exit codes the orchestrator should respect:
 - `64` — no config-slug arg and ambiguous configs, or invalid slug (path
   traversal); ask the user which / for a valid slug.
 - `66` — config not found.
-- `67` — `gh` / network failure; surface the stderr line and stop.
+- `67` — provider (`gh` or Azure DevOps) / network failure; surface the stderr line and stop.
 
 The script enforces the same read-only contract as the rest of this file
 (no `gh ... edit/create/delete`, no GraphQL mutations). If you want to verify
-that for a given invocation: `grep -E 'gh ?\.api\.(issue|pr|project) (edit|create|delete)|mutation {|gh.*(edit|create|delete)' .claude/bin/super-board-status.py` — should return nothing.
+that for a given invocation: `grep -E 'gh ?\.api\.(issue|pr|project) (edit|create|delete)|mutation {|gh.*(edit|create|delete)' .claude/bin/super-board-status.py` — should return nothing. (Azure DevOps: the script calls only the backend's board read and comment read.)
 
 The rest of this document is the format spec the script implements. Read it
 only when (a) the script is missing and you need to hand-render, or (b) you're
@@ -128,6 +129,8 @@ mode:   <auto-merge|human-approves>        truth gate: <off|non-trivial (≥N)|a
    last tick: <time>    run started: <time>    workers: <a>/<m>    worktrees cleaned: <n>
 ```
 
+On Azure DevOps the header line reads `📊 super-board · <ado.project> · <ado.board> (Azure DevOps)`.
+
 ### Sample render (today's live NSAdashboard board)
 
 ```
@@ -192,7 +195,7 @@ mode:   auto-merge                 truth gate: non-trivial (≥70)
 1. Header line (project + `#number`)
 2. Separator (80 × `─`)
 3. Config strip (2 lines: `config/labels/base`, `mode/truth-gate`)
-4. Kanban — 7 boxes in board order, left to right as on GitHub: Backlog · Ready · Building · QA · Review · Blocked · Done (`BOARD_ORDER` in the script; there is no Skipped column since v3.0.0)
+4. Kanban — 7 boxes in board order, left to right as on the board: Backlog · Ready · Building · QA · Review · Blocked · Done (`BOARD_ORDER` in the script; there is no Skipped column since v3.0.0)
 5. `▎Workers`
 6. `▎Block reasons`
 7. `▎Recent`
@@ -215,7 +218,7 @@ Inside a Kanban box, one line per issue:
 ```
 
 - **glyph** (2 visual cells + space): the lane glyph (`🔨`/`🔍`/`✏️`) if the issue
-  is in-flight (claim assignee + `loop:in-{builder,tester,reviewer}` label),
+  is in-flight (claim — GitHub assignee / Azure DevOps claim tag — + `loop:in-{builder,tester,reviewer}` label),
   else three spaces. **This glyph is the highlight** — no separate "active in
   column X" callout needed.
 - **#NNN**: issue number, left-padded to keep title column aligned.
@@ -289,7 +292,7 @@ the run is not active. Adjust three sections:
 - `▎Health` → `last run: completed <N>{m,h,d} ago    workers: 0/<max> idle`
 
 The Kanban board still renders normally — column counts come from the live
-Projects v2 API, not from the manifest.
+board (GitHub Projects v2 API / the Azure DevOps board), not from the manifest.
 
 ### §I — Locked emoji vocabulary
 
@@ -342,7 +345,7 @@ belong in the manifest, not the snapshot.
 
 ## Behaviors
 
-- Pure-read. Touches GitHub for column counts + assignee scan + run-manifest read. No writes.
+- Pure-read. Reads the board (GitHub or Azure DevOps) for column counts + claim scan + run-manifest read. No writes.
 - Works whether `super-board run` is currently active or not — see §H.
 - Multi-project: `super-board status bookkeeping-app` operates on that project's config (same lookup rules as §4 of the spec).
 - Safe to run during a headless `run`. Does not interfere with worker dispatch.
@@ -363,19 +366,24 @@ the script is missing.
   be a GitHub App bot account (e.g. `super-board-bot[bot]`) **or** the user's
   own login when running in user-account mode. If `notifications.bot_identity`
   is absent, fall back to scanning for any assignee that matches the
-  configured identity (e.g. `claim.assignee_login`).
+  configured identity (e.g. `claim.assignee_login`). On Azure DevOps the claim
+  is a tag the backend shows as `assignees: [{login}]` with the token's own
+  login, so the same scan applies.
 - **Project items (column counts + in-flight workers, both from ONE call):**
-  the script issues a single targeted `gh api graphql` query (`ITEMS_QUERY`
+  on GitHub the script issues a single targeted GraphQL query (`ITEMS_QUERY`
   near the top of `super-board-status.py`) that fetches each item's `number`,
   `title`, `labels{nodes{name}}`, and the `Status` single-select field —
-  ≈3 KB total. Group locally by Status for column counts; filter the same
+  ≈3 KB total; on Azure DevOps it reads the board through the forge backend.
+  Group locally by Status for column counts; filter the same
   `labels` array for `loop:in-{builder,tester,reviewer}` to identify
   in-flight workers per lane; `loop:rebuild-N` feeds the `↻ N/3` suffix.
-  Deliberately avoids `gh project item-list --format json` (≈100 KB — it
-  slurps every issue body) and any separate `gh issue list --assignee` call.
-  Do **not** call `gh project item-edit` or any mutation in this verb.
-- **Block-reason parsing:** for each issue in `Blocked`, read the
-  latest §4 reason-tag comment via `gh issue view <N> --json comments` and
+  Deliberately avoids the full project item-list JSON (≈100 KB — it
+  slurps every issue body) and any separate assignee-filtered ticket list.
+  Do **not** move a card or call any mutation in this verb. A hand-render
+  reads the board once with `python3 .claude/bin/super-board-forge.py --config <cfg> board items`.
+- **Block-reason parsing:** for each ticket in `Blocked`, read the
+  latest §4 reason-tag comment (hand-render: the last entry of
+  `python3 .claude/bin/super-board-forge.py --config <cfg> ticket comments <N>`) and
   match the leading emoji against §I. Cache results during the snapshot — do
   not re-read mid-render.
 - **Recent events:** tail the most recent run manifest at
@@ -408,12 +416,28 @@ Same rules as §4 config discovery:
 ## Read-only contract — enforced on both rendering paths
 
 When `super-board-status.py` runs, this contract is enforced by inspection:
-the script issues no `gh` mutations (see the `grep` verification command in
+the script issues no mutations (see the `grep` verification command in
 the Fast-path block above). When the model-render fallback executes instead,
-the model MUST confirm before printing the snapshot that no `gh` invocation
+the model MUST confirm before printing the snapshot that no command
 it issued belongs to the mutation set below. Either way, if any forbidden
 call was made, **halt immediately** and report a contract violation; do not
 print the snapshot.
+
+Forbidden in `status` — every forge write verb:
+
+- `ticket create|edit|close|comment|comment-edit|claim|release`
+- `board move` · `board ensure` (without `--check`)
+- `pr create|ready|set-body|merge|comment|comment-edit|note|notes|note-edit|thread-resolve`
+- `halt`
+
+Allowed in `status` (read-only):
+
+- `board items` / `board status`
+- `ticket list` / `ticket view` / `ticket comments`
+- `pr list` / `pr view`
+- Local filesystem reads of the config JSON and run-manifest markdown.
+
+### GitHub: the same contract in `gh` terms
 
 Forbidden in `status`:
 

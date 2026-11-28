@@ -13,6 +13,7 @@ whose commands are fixed set SB_GITHUB_READ_STRICT=1 to keep halting on it.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -22,6 +23,19 @@ import sys
 import time
 
 HALTED = 79
+
+# Windows: run gh/git by PATHEXT or through Git Bash (super-board-compat.py).
+import importlib.util as _ilu, os as _os, shutil as _sh, subprocess as _sp, types as _ty
+_cpath = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'super-board-compat.py')
+if _os.path.isfile(_cpath):
+    _cspec = _ilu.spec_from_file_location('sb_compat', _cpath)
+    compat = _ilu.module_from_spec(_cspec)
+    _cspec.loader.exec_module(compat)
+else:  # a partial copy without the helper (tests copy a few scripts): tools by bare name, as before
+    compat = _ty.SimpleNamespace(
+        WINDOWS=False, ToolMissing=FileNotFoundError, command_line=lambda argv: argv,
+        resolve=lambda name: [_sh.which(name)] if _sh.which(name) else None,
+        argv_for=lambda argv: [str(a) for a in argv], run=_sp.run, popen=_sp.Popen, utf8_stdio=lambda: None)
 
 
 class ReadHalted(Exception):
@@ -49,6 +63,11 @@ FORMS = {
     'prs-open': 'pr list --state open --json number,title,body,url,headRefName,files',
     'prs-merged': 'pr list --state merged --json number,title,body,url',
     'issues-closed': 'issue list --state closed --json number,title,body,stateReason',
+    'tickets': 'issue list --state open --json number,title,body,state,stateReason,labels,assignees,url',
+    'pr-view': 'api repos/{owner}/{repo}/pulls/<N> --jq <the object built by super-board-forge.py pr view>',
+    'refs': 'pr list --state open --json number,headRefName,baseRefName,headRefOid',
+    'threads': 'api graphql --paginate --slurp -f query=<reviewThreads query of super-board-forge-github.py> -F owner= -F repo= -F pr=<N>',
+    'checks': 'api graphql --paginate --slurp -f query=<statusCheckRollup query of super-board-forge-github.py> -F owner= -F repo= -F pr=<N>',
     'issues': ('api graphql --paginate --slurp -f query=\'query($owner:String!,$repo:String!,$endCursor:String){ '
                'repository(owner:$owner,name:$repo){ issues(states:OPEN,first:100,after:$endCursor){ '
                'pageInfo{ hasNextPage endCursor } nodes{ number title body state labels(first:30){ nodes{ name } } '
@@ -62,8 +81,11 @@ def halt_path():
     if override:
         return Path(override)
     cwd = Path(os.environ.get('SB_REPO_PATH') or Path.cwd())
-    result = subprocess.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'],
+    try:
+        result = compat.run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'],
                             capture_output=True, text=True, timeout=5, cwd=cwd)
+    except (OSError, subprocess.SubprocessError):
+        return cwd / '.claude/super-board/github-halt.json'
     if result.returncode != 0:
         return cwd / '.claude/super-board/github-halt.json'
     # One repo, every worktree: <main checkout>/.claude/super-board/ when the common
@@ -83,7 +105,7 @@ def halt(reason, attempts, operation=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     # Exclusive creation keeps the first failure's evidence when workers trip together.
     try:
-        with path.open('x') as stream:
+        with path.open('x', encoding='utf-8') as stream:
             json.dump({'reason': reason, 'attempts': attempts, 'at': int(time.time()), 'operation': operation}, stream)
     except FileExistsError:
         pass
@@ -302,6 +324,38 @@ def validate(text, kind, meta=None):
                         and all(isinstance(f, dict) and isinstance(f.get('path'), str) and f['path'] for f in entry['files']), 'open PR branch/files missing')
             if kind == 'issues-closed':
                 require(entry.get('stateReason') in ('COMPLETED', 'NOT_PLANNED', 'REOPENED', None) and 'stateReason' in entry, 'closed issue reason missing')
+    elif kind == 'tickets':
+        require(isinstance(value, list), 'required ticket list missing')
+        require(all(isinstance(e, dict) and type(e.get('number')) is int and e['number'] > 0
+                    and isinstance(e.get('title'), str) for e in value), 'ticket identity missing')
+    elif kind == 'pr-view':
+        require(isinstance(value, dict) and type(value.get('number')) is int and value.get('state') in ('OPEN', 'CLOSED', 'MERGED')
+                and re.fullmatch(r'[0-9a-f]{40}', value.get('headRefOid') or '') and isinstance(value.get('baseRefName'), str)
+                and bool(value['baseRefName']) and isinstance(value.get('labels'), list), 'PR view fields missing')
+    elif kind == 'refs':
+        require(isinstance(value, list) and all(isinstance(e, dict) and type(e.get('number')) is int
+                and isinstance(e.get('headRefName'), str) and isinstance(e.get('baseRefName'), str)
+                and (e.get('headRefOid') in (None, '') or re.fullmatch(r'[0-9a-f]{40}', e['headRefOid'])) for e in value),
+                'PR ref list missing')
+    elif kind == 'threads':
+        require(isinstance(value, list) and bool(value), 'review thread pages missing')
+        for index, page in enumerate(value):
+            connection = page['data']['repository']['pullRequest']['reviewThreads']
+            require(isinstance(connection['nodes'], list) and type(connection['pageInfo']['hasNextPage']) is bool
+                    and connection['pageInfo']['hasNextPage'] == (index < len(value) - 1), 'review thread pagination incomplete')
+            require(all(isinstance(n, dict) and isinstance(n.get('id'), str) and type(n.get('isResolved')) is bool
+                        and isinstance(n['comments']['nodes'], list) for n in connection['nodes']), 'review thread fields missing')
+    elif kind == 'checks':
+        require(isinstance(value, list) and bool(value), 'check pages missing')
+        for index, page in enumerate(value):
+            commits = page['data']['repository']['pullRequest']['commits']['nodes']
+            require(len(commits) == 1, 'PR head commit missing')
+            rollup = commits[0]['commit']['statusCheckRollup']
+            if rollup is None:
+                continue
+            connection = rollup['contexts']
+            require(isinstance(connection['nodes'], list) and type(connection['pageInfo']['hasNextPage']) is bool
+                    and connection['pageInfo']['hasNextPage'] == (index < len(value) - 1), 'check pagination incomplete')
     elif kind == 'object':
         require(isinstance(value, dict) and bool(value), 'required object missing')
     elif kind == 'array':
@@ -327,7 +381,7 @@ def read(args, kind='json', meta=None, recovering=False):
         if not recovering:
             check_halt()
         try:
-            result = subprocess.run(['gh', *args], capture_output=True, timeout=30)
+            result = compat.run(['gh', *args], capture_output=True, timeout=30)
             # Decode by hand: text=True turns a lone \r inside a diff line into \n.
             result.stdout = result.stdout.decode('utf-8', 'replace')
             result.stderr = result.stderr.decode('utf-8', 'replace')
@@ -355,6 +409,9 @@ def read(args, kind='json', meta=None, recovering=False):
                 except (ValueError, KeyError, TypeError, AttributeError, IndexError) as error:
                     last = f'GitHub required read returned incomplete evidence: {error}'
                     shape_only = shape_only and not isinstance(error, GitHubErrors)
+        except compat.ToolMissing as error:
+            shape_only = False
+            last = f'GitHub required read could not start: {error}'
         except (OSError, subprocess.SubprocessError):
             shape_only = False
             last = 'GitHub required read timed out or could not start'
@@ -367,8 +424,15 @@ def read(args, kind='json', meta=None, recovering=False):
 
 
 def main():
+    # gh output carries emoji; a piped Windows stdout defaults to the ANSI code page and
+    # raises on them. newline='\n' keeps diffs byte-exact (no CRLF translation).
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', newline='\n')
+        except (AttributeError, ValueError):
+            pass
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--kind', choices=('json','scalar','issue-number','head','state','diff','metadata','items','issues','issue-history','quota','projects','project','fields','status-field','permission','comments','approval','merge-state','body','dedupe','prs-open','prs-merged','issues-closed','issue','object','array'))
+    parser.add_argument('--kind', choices=('json','scalar','issue-number','head','state','diff','metadata','items','issues','issue-history','quota','projects','project','fields','status-field','permission','comments','approval','merge-state','body','dedupe','prs-open','prs-merged','issues-closed','issue','tickets','pr-view','refs','threads','checks','object','array'))
     parser.add_argument('--issue-history', help='complete paginated all-state issue history for owner/name')
     parser.add_argument('--meta')
     parser.add_argument('--check', action='store_true')
@@ -383,14 +447,17 @@ def main():
         if args.resume:
             path = halt_path()
             if path.exists():
-                record = json.loads(path.read_text())
+                record = json.loads(path.read_text(encoding='utf-8'))
                 operation = record.get('operation')
                 if not isinstance(operation, dict):
                     raise ReadHalted('saved failure needs manual outcome reconciliation before restart')
+                if operation.get('provider') not in (None, 'github'):
+                    raise ReadHalted('saved failure is a read on another provider; replay it with '
+                                     'super-board-forge.py resume (it follows the config\'s provider)')
                 if command:
                     if args.kind != operation['kind']:
                         raise ValueError('replacement recovery read must validate the same evidence kind')
-                    meta = json.loads(Path(args.meta).read_text()) if args.meta else operation.get('meta')
+                    meta = json.loads(Path(args.meta).read_text(encoding='utf-8')) if args.meta else operation.get('meta')
                     if args.kind == 'diff':
                         validate(json.dumps(meta), 'metadata')
                     read(command, args.kind, meta, recovering=True)
@@ -409,7 +476,7 @@ def main():
             _, pages = read(['api','graphql','--paginate','--slurp','-f','query='+query,'-F','owner='+owner,'-F','repo='+repo], 'issue-history')
             print(json.dumps([n for page in pages for n in page['data']['repository']['issues']['nodes']]))
             return 0
-        meta = json.loads(Path(args.meta).read_text()) if args.meta else None
+        meta = json.loads(Path(args.meta).read_text(encoding='utf-8')) if args.meta else None
         output, _ = read(command, args.kind or 'json', meta)
         sys.stdout.write(output)
         return 0

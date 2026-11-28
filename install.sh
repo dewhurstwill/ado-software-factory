@@ -30,6 +30,7 @@
 # {from, to, added_skills}; onboard's 🔍 Checks finishes the upgrade and lists it.
 
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/scripts/super-board-compat.sh"  # Windows: jq/python3 shims; no-op elsewhere
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HOOKS=1
@@ -115,15 +116,19 @@ echo "🔧 installing"
 # A destination inside its source would instead recursively copy into itself.
 python3 - "$REPO_ROOT" "$TARGET" "$HOSTS" $PRIMARY_SKILLS $SECONDARY_SKILLS <<'PY'
 from pathlib import Path
+import os
 import sys
 
-root = Path(sys.argv[1]).resolve()
+# os.path.realpath, not Path.resolve: on Windows, Python 3.9's resolve() raises
+# "Access is denied" on a chain of directory symlinks.
+real = lambda p: Path(os.path.realpath(p))
+root = real(sys.argv[1])
 target = Path(sys.argv[2])
 folders = [".agents"] + ["." + h for h in sys.argv[3].split()]
 for skill in sys.argv[4:]:
-    src = (root / "skills" / skill).resolve()
+    src = real(root / "skills" / skill)
     for folder in folders:
-        dest = (target / folder / "skills" / skill).resolve()
+        dest = real(target / folder / "skills" / skill)
         if src == dest:
             continue
         if dest == root or dest in root.parents or dest in src.parents or src in dest.parents:
@@ -226,7 +231,7 @@ for skill in $PRIMARY_SKILLS $SECONDARY_SKILLS; do
   install_skill "$skill" "$SHARED/skills/$skill" || true
 done
 
-SCRIPTS="super-board-project-verifier.py super-board-skills-ready.py super-board-calibration.py super-board-verification-ready.py super-board-github-read.py super-board-collect-state.py super-board-run.sh super-board-gh-guard.sh super-board-card.sh super-board-status.py super-board-wave-plan.sh super-board-lane.sh super-board-codex-lane.sh super-board-codex-wave.sh super-board-deps.sh super-board-preflight.sh super-board-merge-gate.sh super-board-merge-policy.py super-board-approval.py super-board-env-check.sh super-board-agents-md.py super-board-settings.py super-board-setup.py super-board-usage.sh super-board-throttle.sh super-board-host.sh super-board-pr-body.sh super-review-file-refactor.sh super-qa-file-bug.sh super-board-stop.sh"
+SCRIPTS="super-board-project-verifier.py super-board-skills-ready.py super-board-calibration.py super-board-verification-ready.py super-board-github-read.py super-board-forge.py super-board-forge-ado.py super-board-forge-ado-pr.py super-board-forge-github.py super-board-collect-state.py super-board-run.sh super-board-gh-guard.sh super-board-card.sh super-board-status.py super-board-wave-plan.sh super-board-lane.sh super-board-codex-lane.sh super-board-codex-wave.sh super-board-deps.sh super-board-preflight.sh super-board-merge-gate.sh super-board-merge-policy.py super-board-approval.py super-board-env-check.sh super-board-agents-md.py super-board-settings.py super-board-setup.py super-board-usage.sh super-board-throttle.sh super-board-host.sh super-board-pr-body.sh super-review-file-refactor.sh super-qa-file-bug.sh super-board-stop.sh super-board-compat.sh super-board-compat.py"
 for script in $SCRIPTS; do
   if [ -f "$REPO_ROOT/scripts/$script" ]; then
     copy_file "$REPO_ROOT/scripts/$script" "$SHARED/bin/$script"
@@ -306,6 +311,16 @@ elif [ "$PROTECT" -eq 1 ]; then
   echo "   🛡️  --no-hooks: only the push guard → .claude/settings.json ($(merge_settings "$REPO_ROOT/hooks/settings-protect-main.json"))"
 else
   echo "   ⏭️  guard hooks skipped (--no-hooks)"
+fi
+
+# Windows: Claude Code runs the hook commands and the skills' `python3 …` lines in Git Bash
+# as written, without the compat shim. A python.org install has no python3.exe, and the
+# Microsoft Store stub that answers to the name only prints a hint: the guards would then
+# fail open on every tool call. Say so; fixing PATH is the user's call.
+if [ -n "${SB_WINDOWS:-}" ] && ! sb_python3_usable; then
+  echo "   ⚠️  Windows: \`python3\` does not start Python 3.9+ in Git Bash. The guard hooks and the skills call it by that name."
+  echo "      Fix: turn off the python3 App execution alias (Settings → Apps → Advanced app settings), then in Git Bash:"
+  echo "      cp \"\$(command -v python)\" \"\$(dirname \"\$(command -v python)\")/python3.exe\"   (a copy beside python.exe; or install Python with the Python install manager, which adds python3)"
 fi
 
 # AGENTS.md: a re-install refreshes the managed super-board block and touches

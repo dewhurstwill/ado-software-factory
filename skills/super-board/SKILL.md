@@ -1,19 +1,19 @@
 ---
 name: super-board
-description: GitHub-Project-driven autonomous pipeline. Five verbs — onboard, lint, status, run, stop — that take a Project board from empty to drained across Build → QA → Review → Done lanes (labels qa · bug · feature route each card), with graceful shutdown / resume. Use when the user says "super-board", "/super-board", "drain my GitHub project", "set up the autonomous loop", "kick off the headless build/QA pipeline", or "stop super-board".
+description: Board-driven autonomous pipeline on a GitHub Project or an Azure DevOps board. Five verbs — onboard, lint, status, run, stop — that take a board from empty to drained across Build → QA → Review → Done lanes (labels qa · bug · feature route each card), with graceful shutdown / resume. Use when the user says "super-board", "/super-board", "drain my GitHub project", "drain my Azure DevOps board", "set up the autonomous loop", "kick off the headless build/QA pipeline", or "stop super-board".
 ---
 
-# super-board — autonomous GitHub Project pipeline
+# super-board — autonomous board pipeline (GitHub or Azure DevOps)
 
 ## Five verbs
 
 | Verb | Where | What it does |
 |---|---|---|
 | `super-board onboard` | interactive | one-time setup wizard; writes `.claude/super-board/configs/<slug>.json` |
-| `super-board lint` | interactive | walks active-pipeline issues, flags vague ACs, runs pre-flight readiness |
+| `super-board lint` | interactive | walks active-pipeline tickets, flags vague ACs, runs pre-flight readiness |
 | `super-board status` | interactive (read-only) | snapshot of active config, column counts, in-flight workers |
 | `super-board run` | in-session (default) | the autonomous loop: waves of the `super-board-wave` dynamic workflow, run from this session (`worker_backend: "claude-p"` opts into the legacy headless runner `.claude/bin/super-board-run.sh`). Also the resume command — state lives on the board, not in process memory. Accepts a model-tier flag: `--low` (haiku/sonnet/opus ladder), default = medium (sonnet/opus/session), `--high` (opus for every card). `--codex [--low|--high]` overrides the backend for every lane with the matching Codex GPT ladder; `--codex=<model>` or `codex.model` pins one model for every card (see `references/run-workflow.md`). A host with no Workflow tool (a Codex session) runs as `--codex` by itself. |
-| `super-board stop` | interactive | graceful shutdown: posts "stopped mid-flight" comments on every in-flight issue + PR, releases assignee mutexes, kills workers + dispatcher. Next `super-board run` resumes. |
+| `super-board stop` | interactive | graceful shutdown: posts "stopped mid-flight" comments on every in-flight ticket + PR, releases claims, kills workers + dispatcher. Next `super-board run` resumes. |
 
 If invoked with no verb, ask which one.
 
@@ -38,7 +38,8 @@ In Codex the skill is not a slash command: it is `$super-board <verb>`, found in
 | Anything about Blocked exits, 🙋 needs you, or dropping a card | `references/block-template.md` |
 | Optional learning after a successfully completed run | `references/calibration.md` (external installed skill; bounded receipt; explicit existing-skill edit paths) |
 | Config structure questions | `references/config-schema.json` |
-| Worker gh-call discipline / rate-limit recovery | `references/rate-limit-etiquette.md` (+ `scripts/super-board-gh-guard.sh`) |
+| Provider choice, forge verbs, GitHub vs Azure DevOps differences | `references/providers.md` |
+| Worker provider-call discipline / rate-limit recovery | `references/rate-limit-etiquette.md` (+ `scripts/super-board-gh-guard.sh`) |
 
 ## Orchestrator vs worker — the cardinal rule
 

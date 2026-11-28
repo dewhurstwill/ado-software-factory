@@ -62,7 +62,7 @@ def atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:  # LF on Windows too
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
@@ -153,7 +153,7 @@ def render_block(template: Path, version: str) -> list[str]:
 def cmd_block(a) -> int:
     root = Path(a.root)
     path = root / a.file
-    version = a.version or (DEFAULT_VERSION_FILE.read_text().strip()
+    version = a.version or (DEFAULT_VERSION_FILE.read_text(encoding="utf-8").strip()
                             if DEFAULT_VERSION_FILE.is_file() else "0.0.0")
     block = render_block(Path(a.template) if a.template else DEFAULT_TEMPLATE, version)
     if not path.exists():
@@ -277,7 +277,7 @@ def norm(s: str) -> str:
 
 
 def cmd_coverage(a) -> int:
-    units = json.load(open(a.units))
+    units = json.load(open(a.units, encoding="utf-8"))
     target_lines = set()
     for t in a.target:
         if Path(t).is_file():

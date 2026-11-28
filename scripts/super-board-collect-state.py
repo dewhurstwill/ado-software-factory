@@ -36,7 +36,7 @@ def paths(repo):
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     ignore = root / '.gitignore'
     if not ignore.exists():
-        ignore.write_text('*\n')
+        ignore.write_text('*\n', encoding='utf-8')
     key = hashlib.sha256(repo.lower().encode()).hexdigest()
     return key, root / (key + '.lock'), root / (key + '.json')
 
@@ -62,13 +62,13 @@ def run_locked(fd, key, lock_path, args):
     # No shebang exec and no fd inheritance: run the filer as a child under a token file.
     token_path = lock_path.with_suffix('.token')
     token = secrets.token_hex(16)
-    token_path.write_text(token)
+    token_path.write_text(token, encoding='utf-8')
     env = dict(os.environ, SB_COLLECT_LOCK_HELD=key, SB_COLLECT_LOCK_TOKEN=token)
     env.pop('SB_COLLECT_LOCK_FD', None)
     if args[0].endswith('.sh'):
-        args = [shutil.which('bash') or 'bash', *args]
+        args = [*gh.compat.tool('bash'), *args]
     try:
-        return subprocess.call(args, env=env)
+        return subprocess.call(gh.compat.command_line(args), env=env)
     finally:
         token_path.unlink(missing_ok=True)
 
@@ -81,7 +81,7 @@ def lock_held(key, lock_path):
         return os.fstat(fd).st_ino == lock_path.stat().st_ino
     token = os.environ.get('SB_COLLECT_LOCK_TOKEN', '')
     try:
-        return bool(token) and secrets.compare_digest(lock_path.with_suffix('.token').read_text(), token)
+        return bool(token) and secrets.compare_digest(lock_path.with_suffix('.token').read_text(encoding='utf-8'), token)
     except FileNotFoundError:
         return False
 
@@ -89,7 +89,7 @@ def lock_held(key, lock_path):
 def load(path):
     if not path.exists():
         return {'receipts': {}}
-    value = json.loads(path.read_text())
+    value = json.loads(path.read_text(encoding='utf-8'))
     if not isinstance(value, dict) or not isinstance(value.get('receipts'), dict):
         raise ValueError('collector state is malformed; inspect it before retrying')
     return value
@@ -97,7 +97,7 @@ def load(path):
 
 def save(path, value):
     tmp = path.with_suffix('.tmp')
-    with tmp.open('w') as stream:
+    with tmp.open('w', encoding='utf-8') as stream:
         os.chmod(tmp, 0o600)
         json.dump(value, stream)
         stream.flush()
@@ -145,7 +145,7 @@ def main():
             # Explicit manual reconciliation acquires the same lock; never clears a live writer.
             stream = None
             if a.action == 'reconcile' and not held:
-                stream = lock_path.open('a+')
+                stream = lock_path.open('a+', encoding='utf-8')
                 try:
                     try_lock(stream.fileno())
                 except BlockingIOError:

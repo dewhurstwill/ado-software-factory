@@ -3,6 +3,7 @@
 # max_workers after a wave. No network: `gh` is a stub that answers the REST
 # rate_limit and the GraphQL rateLimit reads from env vars.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 KIT=$(cd "$(dirname "$0")/.." && pwd)
 S="$KIT/scripts/super-board-throttle.sh"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT

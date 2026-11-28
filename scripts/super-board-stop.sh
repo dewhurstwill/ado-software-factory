@@ -6,7 +6,10 @@
 #      Stop any Codex wave and its lane process groups before comments/releases.
 #   2. For each one, post a "stopped mid-flight" comment on the issue AND its PR
 #      (with last commit, lane, and resume hint) — so context survives the kill.
-#   3. Release the GitHub assignee mutex on each claimed issue.
+#   3. Release the GitHub assignee mutex on each claimed issue. (Azure DevOps config: the same
+#      steps through super-board-forge.py: `ticket comment`, `pr comment`, `ticket release` --
+#      with --force when our release leaves a claim tag behind -- and `ticket edit` for the loop
+#      labels. No `gh` is run.)
 #   4. SIGTERM → 1s → SIGKILL the worker PIDs.
 #   5. Kill the legacy dispatcher loop (super-board-run.sh).
 #   6. Remove in-flight locks. Leave worktrees in place (Builder can resume).
@@ -33,6 +36,7 @@
 #   66 config not found
 
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/super-board-compat.sh"  # Windows: jq/python3 shims; no-op elsewhere
 
 # ───────────────────────────── args + paths ─────────────────────────────
 CONFIG_SLUG="${1:-}"
@@ -52,7 +56,11 @@ if [ ! -f "$CONFIG_PATH" ]; then
 fi
 
 # ───────────────────────────── config read ─────────────────────────────
+# GitHub only: the assignee to remove. Azure DevOps claims with a tag and never reads it.
 BOT_LOGIN=$(jq -r '.notifications.bot_identity // .bot_identity // ""' "$CONFIG_PATH")
+PROVIDER=$(jq -r '.provider // "github"' "$CONFIG_PATH" | tr -d '\r')
+FORGE_PY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/super-board-forge.py"
+forge() { python3 "$FORGE_PY" --config "$CONFIG_PATH" "$@"; }
 INFLIGHT_DIR=".claude/super-board/inflight"
 RUN_DATE=$(date +%Y-%m-%d)
 RUN_MANIFEST="docs/super-board/runs/${RUN_DATE}-${CONFIG_SLUG}.md"
@@ -82,6 +90,11 @@ read_lock() {
 # Look up the PR number for an issue's branch (if any). One gh call.
 pr_for_issue() {
   local issue="$1"
+  if [ "$PROVIDER" = azure-devops ]; then
+    forge pr refs --state open --limit 200 2>/dev/null \
+      | jq -r --arg p "issue-${issue}-" '.[] | select(.headRefName | startswith($p)) | .number' 2>/dev/null | tr -d '\r' | head -1
+    return 0
+  fi
   gh pr list --state open --json number,headRefName \
     --jq ".[] | select(.headRefName | startswith(\"issue-${issue}-\")) | .number" 2>/dev/null | head -1
 }
@@ -106,6 +119,21 @@ Did: \`super-board stop\` ended worker PID ${pid:-unknown} at ${TS}
 ❌ Not done: interrupted work may be uncommitted; inspect the preserved worktree
 Next: preserve edits before \`super-board run ${CONFIG_SLUG}\`; dirty or legacy worktrees need inspection"
 
+  if [ "$PROVIDER" = azure-devops ]; then
+    local bodyfile; bodyfile=$(mktemp)
+    printf '%s\n' "$body" > "$bodyfile"
+    forge ticket comment "$issue" --body-file "$bodyfile" >/dev/null 2>&1 \
+      && log "  💬 ticket comment posted on #${issue}" \
+      || log "  ⚠ failed to comment on ticket #${issue} (continuing)"
+    if [ -n "$pr" ]; then
+      forge pr comment "$pr" --body-file "$bodyfile" >/dev/null 2>&1 \
+        && log "  💬 PR comment posted on #${pr}" \
+        || log "  ⚠ failed to comment on PR #${pr} (continuing)"
+    fi
+    rm -f "$bodyfile"
+    return 0
+  fi
+
   gh issue comment "$issue" --body "$body" >/dev/null 2>&1 \
     && log "  💬 issue comment posted on #${issue}" \
     || log "  ⚠ failed to comment on issue #${issue} (continuing)"
@@ -119,6 +147,21 @@ Next: preserve edits before \`super-board run ${CONFIG_SLUG}\`; dirty or legacy 
 
 release_claim() {
   local issue="$1"
+  if [ "$PROVIDER" = azure-devops ]; then
+    # The claim is a tag, not an assignee: release OURS; if a claim tag is still there (another
+    # holder id wrote it, e.g. a crashed run under a different SB_CLAIM_HOLDER) sweep it with --force.
+    forge ticket release "$issue" >/dev/null 2>&1 || log "  ⚠ could not release the claim on #${issue} (continuing)"
+    if [ "$(forge ticket view "$issue" 2>/dev/null | jq -r '(.assignees // []) | length' 2>/dev/null | tr -d '\r')" -gt 0 ] 2>/dev/null; then
+      forge ticket release "$issue" --force >/dev/null 2>&1 && log "  🔓 swept a claim that was not ours on #${issue}" \
+        || log "  ⚠ a claim is still on #${issue} (continuing)"
+    fi
+    local label
+    for label in loop:in-build loop:in-qa loop:in-review; do
+      forge ticket edit "$issue" --remove-label "$label" >/dev/null 2>&1 || true
+    done
+    log "  🔓 released claim + lane labels on #${issue}"
+    return 0
+  fi
   [ -z "$BOT_LOGIN" ] && return 0
   gh issue edit "$issue" --remove-assignee "$BOT_LOGIN" >/dev/null 2>&1 || true
   for label in loop:in-build loop:in-qa loop:in-review; do
@@ -144,6 +187,35 @@ kill_pid() {
   else
     log "  ☠ ${name} pid=${pid} SIGTERMed"
   fi
+}
+
+# The Codex wave marker holds the PID the wave's Python wrote. On Windows that is a
+# Windows PID, which bash's kill -0 (MSYS PIDs) cannot see, and ps has no -o: check,
+# identify and end it with Windows tools there (see super-board-run.sh, PID trap).
+wave_alive() {
+  if [ -n "${SB_WINDOWS:-}" ]; then
+    tasklist //FI "PID eq $1" //FO CSV //NH 2>/dev/null | grep -q "\"$1\""
+  else
+    kill -0 "$1" 2>/dev/null
+  fi
+}
+wave_args() {
+  if [ -n "${SB_WINDOWS:-}" ]; then
+    powershell.exe -NoProfile -NonInteractive -Command \
+      "(Get-CimInstance Win32_Process -Filter 'ProcessId=$1').CommandLine" 2>/dev/null
+  else
+    ps -p "$1" -o args= 2>/dev/null
+  fi
+}
+# Windows has no SIGTERM for another process: end the wave's whole tree (its lanes
+# included) at once, then wait for it to be gone.
+stop_wave() {
+  local pid="$1" grace="$2" waited=0
+  if [ -z "${SB_WINDOWS:-}" ]; then kill_pid "$pid" "codex-wave" "$grace"; return; fi
+  if ! wave_alive "$pid"; then log "  ⊘ codex-wave pid=${pid} already dead"; return 0; fi
+  taskkill //PID "$pid" //T //F >/dev/null 2>&1 || true
+  while wave_alive "$pid" && [ "$waited" -lt "$grace" ]; do sleep 1; waited=$((waited + 1)); done
+  if wave_alive "$pid"; then log "  ⚠ codex-wave pid=${pid} still running after taskkill"; else log "  ☠ codex-wave pid=${pid} ended (process tree)"; fi
 }
 
 # ───────────────────────────── main ─────────────────────────────
@@ -174,10 +246,10 @@ if [ -f "$CODEX_WAVE_MARKER" ]; then
     log "🛑 invalid Codex wave PID marker; preserve claims and inspect $CODEX_WAVE_MARKER"
     exit 1 ;;
   esac
-  if kill -0 "$CODEX_WAVE_PID" 2>/dev/null; then
+  if wave_alive "$CODEX_WAVE_PID"; then
     # Refuse a reused PID, or an unavailable process identity, rather than
     # signal an unrelated process and release a still-running wave's claims.
-    if ! ps -p "$CODEX_WAVE_PID" -o args= 2>/dev/null | grep -q 'super-board-codex-wave'; then
+    if ! wave_args "$CODEX_WAVE_PID" | grep -q 'super-board-codex-wave'; then
       log "🛑 cannot identify Codex wave PID $CODEX_WAVE_PID; preserve claims and inspect $CODEX_WAVE_MARKER"
       exit 1
     fi
@@ -194,7 +266,7 @@ fi
 # and reaps them (up to five seconds), before any claim can be released.
 if [ -n "$CODEX_WAVE_PID" ]; then
   log "🛑 stopping Codex wave and its lane workers"
-  kill_pid "$CODEX_WAVE_PID" "codex-wave" 7
+  stop_wave "$CODEX_WAVE_PID" 7
 fi
 
 # 2. Per-worker wrap-up: comment, release claim, kill.

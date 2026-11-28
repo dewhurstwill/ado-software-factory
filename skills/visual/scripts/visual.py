@@ -253,7 +253,7 @@ def output_path(root: Path, data: dict) -> Path:
         d.mkdir(exist_ok=True)
         gi = d / ".gitignore"
         if not gi.exists():
-            gi.write_text("*\n")
+            gi.write_text("*\n", encoding="utf-8")
     d.mkdir(parents=True, exist_ok=True)
     return d / name
 
@@ -336,7 +336,7 @@ def link_sources(data: dict, repo: Path, src_root: Path, base: str) -> int:
         path, a, b = m[1], m[2], m[3]
         full = (repo / prefix / path).resolve()
         try:
-            rel = full.relative_to(src_root).as_posix()
+            rel = full.relative_to(src_root.resolve()).as_posix()  # both resolved: Windows adds a drive
         except ValueError:
             return s, 0
         anchor = f"#L{a}" + (f"-L{b}" if b else "") if a else ""
@@ -356,7 +356,7 @@ def link_sources(data: dict, repo: Path, src_root: Path, base: str) -> int:
             n += c
     if isinstance(data.get("source"), str) and not data["source"].startswith("~"):
         try:
-            data["source"] = (repo / data["source"]).resolve().relative_to(src_root).as_posix()
+            data["source"] = (repo / data["source"]).resolve().relative_to(src_root.resolve()).as_posix()
         except ValueError:
             pass
     data["sourcesBase"] = ""
@@ -546,7 +546,7 @@ def cmd_skillmap(a) -> None:
     fam = {}
     fpath = sk / "families.json"
     if fpath.is_file():
-        for group in json.loads(fpath.read_text()).values():
+        for group in json.loads(fpath.read_text(encoding="utf-8")).values():
             for name, blurb in (group.get("skills") or {}).items():
                 fam[name] = blurb
     skills = {}
@@ -677,7 +677,7 @@ def cmd_skillmap(a) -> None:
     snip = pack / "hooks" / "settings-snippet.json"
     hook_ids = []
     if snip.is_file():
-        cfg = json.loads(snip.read_text()).get("hooks", {})
+        cfg = json.loads(snip.read_text(encoding="utf-8")).get("hooks", {})
         for event, groups in cfg.items():
             eid = "event:" + event
             add_node({"id": eid, "label": event, "kind": "hook", "verbs": [],

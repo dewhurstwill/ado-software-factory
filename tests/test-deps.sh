@@ -7,6 +7,7 @@
 # "no blockers" and got cards built against a base branch that did not have what
 # they needed.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")"
 DEPS="../scripts/super-board-deps.sh"
 FIX=fixtures/deps-issues.json

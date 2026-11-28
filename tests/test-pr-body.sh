@@ -4,6 +4,7 @@
 #
 #   bash tests/test-pr-body.sh
 set -uo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$REPO_ROOT/scripts/super-board-pr-body.sh"
@@ -13,7 +14,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS + 1)); printf '  ✅ %s\n' "$1"; }
-bad() { FAIL=$((FAIL + 1)); printf '  ❌ %s\n     expected: %s\n     actual:   %s\n' "$1" "$2" "$3"; }
+bad() { FAIL=$((FAIL + 1)); printf '  ❌ %s\n     expected: %s\n     actual:   %s\n' "$1" "$2" "$3"; sed 's/^/     stderr: /' "$WORK/err" 2>/dev/null | head -5; }
 is()  { [ "$2" = "$3" ] && ok "$1" || bad "$1" "$2" "$3"; }
 has() { case "$2" in *"$3"*) ok "$1" ;; *) bad "$1" "contains: $3" "$2" ;; esac; }
 hasnt() { case "$2" in *"$3"*) bad "$1" "no '$3'" "found it" ;; *) ok "$1" ;; esac; }

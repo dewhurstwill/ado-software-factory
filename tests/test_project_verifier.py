@@ -2,11 +2,13 @@
 """Exercise project-map inspection and selection through the shipped CLI."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+import sbtest  # Git Bash on Windows, pinned git settings
 
 KIT = Path(__file__).resolve().parents[1]
 CLI = KIT / 'scripts/super-board-project-verifier.py'
@@ -92,8 +94,10 @@ class ProjectVerifier(unittest.TestCase):
             path = self.root / name
             original = path.read_bytes()
             path.write_text(''); self.run_cli(expected=9)
-            path.write_bytes(original); path.chmod(0)
-            self.run_cli(expected=9)
+            path.write_bytes(original)
+            if os.name != 'nt':  # Windows: chmod only sets read-only; a file cannot be made unreadable
+                path.chmod(0)
+                self.run_cli(expected=9)
             path.chmod(0o644); path.unlink(); self.run_cli(expected=9)
             path.symlink_to(self.root / 'absent'); self.run_cli(expected=9)
             path.unlink(); path.write_bytes(original)
@@ -139,7 +143,7 @@ class ProjectVerifier(unittest.TestCase):
         self.assertNotEqual(initial['inputs']['map'], self.run_cli()['inputs']['map'])
 
     def test_installed_helper_inspects_project_without_creating_verifier_coverage(self):
-        process = subprocess.run(['bash', str(KIT / 'install.sh'), '--no-hooks', str(self.root)],
+        process = subprocess.run([sbtest.BASH, str(KIT / 'install.sh'), '--no-hooks', str(self.root)],
                                  capture_output=True, text=True)
         self.assertEqual(process.returncode, 0, process.stderr)
         installed = self.root / '.claude/bin/super-board-project-verifier.py'

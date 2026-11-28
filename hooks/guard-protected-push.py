@@ -134,7 +134,7 @@ def protected_branches(project_dir):
     names = {"main", "master"}
     for p in glob.glob(os.path.join(project_dir, ".claude", "super-board", "configs", "*.json")):
         try:
-            base = json.load(open(p)).get("base_branch")
+            base = json.load(open(p, encoding="utf-8")).get("base_branch")
             if isinstance(base, str) and base:
                 names.add(base)
         except (OSError, ValueError, AttributeError):
@@ -184,7 +184,7 @@ def main():
     try:
         if os.environ.get("SB_ALLOW_PROTECTED_PUSH") == "1":
             return
-        payload = json.loads(sys.stdin.read() or "{}")
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8", "replace") or "{}")  # UTF-8 whatever the code page
         command = (payload.get("tool_input") or {}).get("command")
         if not isinstance(command, str):
             return

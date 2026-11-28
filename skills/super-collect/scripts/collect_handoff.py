@@ -98,7 +98,7 @@ def render(findings, since, date):
 
 
 def doc(args):
-    findings = json.loads(Path(args.findings).read_text())
+    findings = json.loads(Path(args.findings).read_text(encoding='utf-8'))
     if not isinstance(findings, list):
         print("collect-handoff: --findings must be a JSON array", file=sys.stderr)
         return 64
@@ -115,11 +115,12 @@ def doc(args):
         n += 1
     if not args.yes:
         sys.stdout.write(text)
-        print(f"collect-handoff: dry run — would write {out}", file=sys.stderr)
+        print(f"collect-handoff: dry run — would write {out.as_posix()}", file=sys.stderr)
         return 0
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(text)
-    print(out)
+    with open(out, 'w', encoding='utf-8', newline='\n') as stream:  # LF on Windows too
+        stream.write(text)
+    print(out.as_posix())  # the same repo-relative path on every OS
     return 0
 
 

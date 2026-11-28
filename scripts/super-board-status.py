@@ -26,6 +26,10 @@ What it does NOT do:
 Cross-platform: pure Python 3 stdlib + `gh` CLI. Works on macOS, Linux,
 Windows (PowerShell / CMD / Git Bash / WSL). No bash, no jq.
 
+Azure DevOps: a config with `"provider": "azure-devops"` reads the board and the newest comment
+of each Blocked card through the forge backend (`super-board-forge.py`, beside this script),
+in-process: still no bash, no jq, no `gh`. The GitHub path below is unchanged.
+
 Usage:
   python .claude/bin/super-board-status.py [<config-slug>]
 
@@ -38,7 +42,10 @@ Exit codes:
 
 from __future__ import annotations
 
+import contextlib
 import datetime
+import importlib.util
+import io
 import json
 import re
 import subprocess
@@ -48,11 +55,21 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Callable
 
-# Make box-drawing chars render on Windows consoles too.
-try:
-    sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
-except Exception:
-    pass
+# Windows: run tools by PATHEXT or through Git Bash, UTF-8 stdio (super-board-compat.py).
+import importlib.util as _ilu, os as _os, shutil as _sh, subprocess as _sp, types as _ty
+_cpath = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'super-board-compat.py')
+if _os.path.isfile(_cpath):
+    _cspec = _ilu.spec_from_file_location('sb_compat', _cpath)
+    compat = _ilu.module_from_spec(_cspec)
+    _cspec.loader.exec_module(compat)
+else:  # a partial copy without the helper (tests copy a few scripts): tools by bare name, as before
+    compat = _ty.SimpleNamespace(
+        WINDOWS=False, ToolMissing=FileNotFoundError, command_line=lambda argv: argv,
+        resolve=lambda name: [_sh.which(name)] if _sh.which(name) else None,
+        argv_for=lambda argv: [str(a) for a in argv], run=_sp.run, popen=_sp.Popen, utf8_stdio=lambda: None)
+
+# Make box-drawing chars render on Windows consoles too (UTF-8, \n line ends).
+compat.utf8_stdio()
 
 
 # ───────────────────────────── lane constants ─────────────────────────────
@@ -341,7 +358,7 @@ def resolve_config_slug(argv: list[str]) -> str:
         return argv[1]
     active = Path(".claude/super-board/active")
     if active.is_file():
-        return active.read_text().strip()
+        return active.read_text(encoding="utf-8").strip()
     cfgs = sorted(Path(".claude/super-board/configs").glob("*.json"))
     if len(cfgs) == 1:
         return cfgs[0].stem
@@ -352,7 +369,7 @@ def resolve_config_slug(argv: list[str]) -> str:
 def gh(*args: str, check: bool = True) -> str:
     """Run gh and return stdout. Exits 67 on failure when check=True."""
     try:
-        proc = subprocess.run(
+        proc = compat.run(
             ["gh", *args], capture_output=True, text=True, encoding="utf-8", check=False
         )
     except FileNotFoundError:
@@ -434,6 +451,73 @@ def paginate_items(
     return all_nodes, True
 
 
+
+# ───────────────────────────── Azure DevOps ─────────────────────────────
+# `"provider": "azure-devops"`: the board and the comments come from the forge's Azure DevOps
+# backend, loaded IN-PROCESS (stdlib urllib inside it; no bash, no jq, no subprocess). Read-only
+# like the rest of this script: the backend's halt writing is switched off (a status call must not
+# stop a run) and an existing halt file does not block the read. Credentials: AZURE_DEVOPS_EXT_PAT,
+# the project .env, or `az login` (see references/providers.md).
+
+
+class AdoReader:
+    def __init__(self, cfg: dict[str, Any]) -> None:
+        here = Path(__file__).resolve().parent
+        spec = importlib.util.spec_from_file_location("super_board_forge", here / "super-board-forge.py")
+        if spec is None or spec.loader is None:
+            print("super-board-forge.py not found beside this script", file=sys.stderr)
+            sys.exit(67)
+        self.forge = importlib.util.module_from_spec(spec)
+        sys.modules["super_board_forge"] = self.forge  # the forge binds its Azure DevOps mixins to its own module
+        spec.loader.exec_module(self.forge)
+        self.backend = self.forge.AzureDevOpsBackend(cfg, None)
+
+        def never_halt(*_a: Any) -> None:
+            return None
+
+        def fail(reason: str, *_attempts: Any) -> None:
+            raise RuntimeError(reason)
+
+        self.backend.check_halt = never_halt  # type: ignore[method-assign]
+        self.backend.stop = fail  # type: ignore[method-assign]
+
+    def items(self) -> list[dict[str, Any]]:
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                self.backend.board_items([])
+            data = json.loads(buf.getvalue())
+        except Exception as error:  # ForgeError, a failed read, malformed JSON
+            print(f"Azure DevOps board read failed: {error}", file=sys.stderr)
+            sys.exit(67)
+        return [
+            {
+                "number": it["content"]["number"],
+                "title": sanitize_title(it.get("title") or ""),
+                "labels": [l for l in (it.get("labels") or []) if l],
+                "status": it.get("status") or "Backlog",
+            }
+            for it in data.get("items", [])
+        ]
+
+    def identity(self) -> str:
+        """The authenticated Azure DevOps login (`whoami`): what a claim tag shows as the assignee.
+        `notifications.bot_identity` is GitHub-only and ignored here. '?' when it cannot be read."""
+        try:
+            return str(self.backend.whoami().get("login") or "?")
+        except Exception:
+            return "?"
+
+    def newest_comment(self, number: int) -> str | None:
+        """Body of the newest comment (the reason tag), or None when it cannot be read."""
+        try:
+            rows = self.backend.ticket_comment_rows(number)
+        except Exception:
+            return None
+        rows.sort(key=lambda r: r.get("created_at") or "")
+        return ((rows[-1].get("body") if rows else "") or "")[:4000]
+
+
 # ───────────────────────────── main ─────────────────────────────
 
 
@@ -508,82 +592,100 @@ def main() -> int:
         print(f"config not found: {config_path}", file=sys.stderr)
         return 66
 
-    cfg = json.loads(config_path.read_text())
-    project_owner: str = cfg["project"]["owner"]
-    project_number: int = int(cfg["project"]["number"])
+    cfg = json.loads(config_path.read_text(encoding="utf-8"))
+    provider = cfg.get("provider", "github")
+    if provider not in ("github", "azure-devops"):
+        print(f"unknown provider {provider!r} in config (expected github or azure-devops)", file=sys.stderr)
+        return 66
+    ado = AdoReader(cfg) if provider == "azure-devops" else None
     runs_dir = cfg.get("paths", {}).get("runs_dir", "docs/super-board/runs")
     run_date = datetime.date.today().isoformat()
     manifest_path = Path(runs_dir) / f"{run_date}-{config_slug}.md"
 
-    # ── fetch project items (paginated) ──
-    def fetch_page(after: str | None) -> dict[str, Any]:
-        args = [
-            "api", "graphql",
-            "-f", f"query={ITEMS_QUERY}",
-            "-F", f"owner={project_owner}",
-            "-F", f"number={project_number}",
-        ]
-        if after:
-            # First page leaves `$after` unset → GraphQL defaults to null.
-            args += ["-F", f"after={after}"]
-        out = gh(*args)
-        payload: dict[str, Any] = json.loads(out)
-        if payload.get("errors"):
-            print("graphql returned errors:", file=sys.stderr)
-            for err in payload["errors"]:
-                print(f"  - {err.get('message')}", file=sys.stderr)
-            sys.exit(67)
-        return payload
+    if ado is not None:
+        # Azure DevOps: the forge backend, in-process (no bash, no jq, no subprocess).
+        items = ado.items()
+        by_status = {
+            s: sorted([i for i in items if i["status"] == s], key=lambda x: -x["number"])
+            for s in BOARD_ORDER
+        }
+        reasons = {}
+        for it in by_status["Blocked"]:
+            body = ado.newest_comment(it["number"])
+            if body is not None:
+                reasons[it["number"]] = body
+    else:
+        project_owner: str = cfg["project"]["owner"]
+        project_number: int = int(cfg["project"]["number"])
+        # ── fetch project items (paginated) ──
+        def fetch_page(after: str | None) -> dict[str, Any]:
+            args = [
+                "api", "graphql",
+                "-f", f"query={ITEMS_QUERY}",
+                "-F", f"owner={project_owner}",
+                "-F", f"number={project_number}",
+            ]
+            if after:
+                # First page leaves `$after` unset → GraphQL defaults to null.
+                args += ["-F", f"after={after}"]
+            out = gh(*args)
+            payload: dict[str, Any] = json.loads(out)
+            if payload.get("errors"):
+                print("graphql returned errors:", file=sys.stderr)
+                for err in payload["errors"]:
+                    print(f"  - {err.get('message')}", file=sys.stderr)
+                sys.exit(67)
+            return payload
 
-    items_raw, hit_cap = paginate_items(fetch_page)
-    if hit_cap:
-        print(
-            f"warning: stopped after {MAX_ITEM_PAGES * 100} items — "
-            f"kanban may not show every card",
-            file=sys.stderr,
-        )
+        items_raw, hit_cap = paginate_items(fetch_page)
+        if hit_cap:
+            print(
+                f"warning: stopped after {MAX_ITEM_PAGES * 100} items — "
+                f"kanban may not show every card",
+                file=sys.stderr,
+            )
 
-    items: list[dict[str, Any]] = []
-    for n in items_raw:
-        c = n.get("content") or {}
-        if not c.get("number"):
-            continue
-        items.append({
-            "number": c["number"],
-            "title": sanitize_title(c.get("title") or ""),
-            "labels": [
-                l["name"]
-                for l in (c.get("labels", {}).get("nodes") or [])
-                if l.get("name")
-            ],
-            "status": field_status(n),
-        })
+        items: list[dict[str, Any]] = []
+        for n in items_raw:
+            c = n.get("content") or {}
+            if not c.get("number"):
+                continue
+            items.append({
+                "number": c["number"],
+                "title": sanitize_title(c.get("title") or ""),
+                "labels": [
+                    l["name"]
+                    for l in (c.get("labels", {}).get("nodes") or [])
+                    if l.get("name")
+                ],
+                "status": field_status(n),
+            })
 
-    by_status: dict[str, list[dict[str, Any]]] = {
-        s: sorted([i for i in items if i["status"] == s], key=lambda x: -x["number"])
-        for s in BOARD_ORDER
-    }
+        by_status: dict[str, list[dict[str, Any]]] = {
+            s: sorted([i for i in items if i["status"] == s], key=lambda x: -x["number"])
+            for s in BOARD_ORDER
+        }
 
-    # ── fetch reason-tag comments for Blocked only ──
-    # Skip silently on error so a stale token doesn't break the rest of the
-    # snapshot. The body is capped at 4000 chars; emojis in the locked
-    # vocabulary land at the top of any well-formed reason-tag comment.
-    reasons: dict[int, str] = {}
-    for it in by_status["Blocked"]:
-        n = it["number"]
-        out = gh("issue", "view", str(n), "--json", "comments", check=False)
-        if not out:
-            continue
-        try:
-            comments = json.loads(out).get("comments") or []
-        except json.JSONDecodeError:
-            continue
-        comments.sort(key=lambda c: c.get("createdAt", ""))
-        body = (comments[-1].get("body") if comments else "") or ""
-        reasons[n] = body[:4000]
+        # ── fetch reason-tag comments for Blocked only ──
+        # Skip silently on error so a stale token doesn't break the rest of the
+        # snapshot. The body is capped at 4000 chars; emojis in the locked
+        # vocabulary land at the top of any well-formed reason-tag comment.
+        reasons: dict[int, str] = {}
+        for it in by_status["Blocked"]:
+            n = it["number"]
+            out = gh("issue", "view", str(n), "--json", "comments", check=False)
+            if not out:
+                continue
+            try:
+                comments = json.loads(out).get("comments") or []
+            except json.JSONDecodeError:
+                continue
+            comments.sort(key=lambda c: c.get("createdAt", ""))
+            body = (comments[-1].get("body") if comments else "") or ""
+            reasons[n] = body[:4000]
 
     # ── parse manifest ──
-    manifest_text = manifest_path.read_text() if manifest_path.is_file() else ""
+    manifest_text = manifest_path.read_text(encoding="utf-8") if manifest_path.is_file() else ""
     now_epoch = int(time.time())
     state = parse_manifest(manifest_text, run_date)
     inflight = state["inflight"]
@@ -637,19 +739,24 @@ def main() -> int:
         return reason_for(reasons.get(n, ""))
 
     # ── header ──
-    proj = cfg["project"]
+    if ado is not None:
+        settings = cfg.get("ado") or {}
+        header = f"{settings.get('project', '?')} · {settings.get('board') or 'Stories'} (Azure DevOps)"
+    else:
+        proj = cfg["project"]
+        header = f"{proj['title']} (#{proj['number']})"
     mode_label = "human-approves" if cfg.get("human_approves_merge") else "auto-merge"
     tg = cfg.get("truth_gate", "off")
     tt = cfg.get("truth_threshold", 70)
     gate_label = {"off": "off", "always": "always"}.get(tg, f"non-trivial (≥{tt})")
-    bot_login = (
+    bot_login = ado.identity() if ado is not None else (
         cfg.get("notifications", {}).get("bot_identity")
         or cfg.get("claim", {}).get("assignee_login")
         or "?"
     )
     max_workers = cfg.get("max_workers", 3)
 
-    print(f"📊 super-board · {proj['title']} (#{proj['number']})")
+    print(f"📊 super-board · {header}")
     print("─" * 80)
     print(f"config: {config_slug}   labels: qa · bug · feature   base: {cfg.get('base_branch', '?')}")
     print(f"mode:   {mode_label:<22} truth gate: {gate_label}")

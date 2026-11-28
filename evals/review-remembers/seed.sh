@@ -22,6 +22,8 @@ echo "seed: HOME=$HOME WS=$WS" >&2
 git init -q -b main .
 git config user.email eval@example.com
 git config user.name eval
+source "$(dirname "$(command -v gh)")/../pack-seed.sh"
+pack_seed shop
 mkdir -p src tests
 cat > src/cart.py <<'PY'
 def total(prices, discount_pct=0):

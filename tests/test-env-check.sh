@@ -2,6 +2,7 @@
 # Tests super-board-env-check.sh — key names in, present/empty/missing out, and
 # never a byte of any value on stdout or stderr.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")"
 EC="$PWD/../scripts/super-board-env-check.sh"
 fail() { echo "FAIL: $1" >&2; exit 1; }
@@ -36,4 +37,10 @@ E=$(mktemp -d); OUT=$(cd "$E" && "$EC" A || true); rm -rf "$E"
 RC=0; "$EC" >/dev/null 2>&1 || RC=$?; [ "$RC" -eq 64 ] || fail "no keys should exit 64, got $RC"
 RC=0; (cd "$T" && "$EC" 'A.*' >/dev/null 2>&1) || RC=$?; [ "$RC" -eq 64 ] || fail "a bad key name should exit 64, got $RC"
 
-echo "PASS: test-env-check.sh (5 scenarios)"
+# 6 — no --file: a key in .env counts even when .env.local exists without it; --file stays exact.
+printf 'OTHER=1\n' > "$T/${D}.local"
+(cd "$T" && "$EC" A | grep -qx "A present") || fail "a key in .env must be found when .env.local lacks it"
+OUT=$(cd "$T" && "$EC" --file "${D}.local" A || true)
+[ "$OUT" = "A missing" ] || fail "--file must look in that one file only, got: $OUT"
+
+echo "PASS: test-env-check.sh (6 scenarios)"

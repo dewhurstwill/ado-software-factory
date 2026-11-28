@@ -8,6 +8,19 @@ import re
 import subprocess
 import sys
 
+# Windows: run tools by PATHEXT or through Git Bash, UTF-8 stdio (super-board-compat.py).
+import importlib.util as _ilu, os as _os, shutil as _sh, subprocess as _sp, types as _ty
+_cpath = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'super-board-compat.py')
+if _os.path.isfile(_cpath):
+    _cspec = _ilu.spec_from_file_location('sb_compat', _cpath)
+    compat = _ilu.module_from_spec(_cspec)
+    _cspec.loader.exec_module(compat)
+else:  # a partial copy without the helper (tests copy a few scripts): tools by bare name, as before
+    compat = _ty.SimpleNamespace(
+        WINDOWS=False, ToolMissing=FileNotFoundError, command_line=lambda argv: argv,
+        resolve=lambda name: [_sh.which(name)] if _sh.which(name) else None,
+        argv_for=lambda argv: [str(a) for a in argv], run=_sp.run, popen=_sp.Popen, utf8_stdio=lambda: None)
+
 
 class Skip(ValueError):
     def __init__(self, reason):
@@ -76,7 +89,7 @@ def installed_skill(settings, root):
 
 
 def git_ok(root, *args):
-    return subprocess.run(['git', '-C', str(root), *args], stdout=subprocess.DEVNULL,
+    return compat.run(['git', '-C', str(root), *args], stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL).returncode == 0
 
 

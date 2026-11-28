@@ -1,12 +1,91 @@
 #!/usr/bin/env bash
 # Offline release checks. Keep test-* / test_* suites offline; paid evals live in evals/.
 # Run every suite even after a failure, then fail the whole gate if any suite failed.
+# Each suite gets SB_SUITE_TIMEOUT seconds (default 300, 900 on Windows); a suite still running then is
+# killed with its child processes and counted as failed (exit 124), and the run goes on.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+# Windows (Git Bash): jq without CRLF and a working python3, exported to every suite,
+# plus the pinned test git settings and LF-writing Python fakes (tests/sbtest.sh).
+# shellcheck source=sbtest.sh
+if [ -f tests/sbtest.sh ]; then . tests/sbtest.sh
+elif [ -f scripts/super-board-compat.sh ]; then . scripts/super-board-compat.sh
+fi
 
 for tool in bash python3 git jq node curl tar; do
   command -v "$tool" >/dev/null || { echo "Missing test dependency: $tool" >&2; exit 1; }
 done
+
+# Windows process start-up is slow: the longest suites take minutes there, not seconds.
+if [ -n "${SB_WINDOWS:-}" ]; then SUITE_LIMIT="${SB_SUITE_TIMEOUT:-900}"; else SUITE_LIMIT="${SB_SUITE_TIMEOUT:-300}"; fi
+case "$SUITE_LIMIT" in ''|*[!0-9]*) echo "SB_SUITE_TIMEOUT must be whole seconds" >&2; exit 64 ;; esac
+
+# Stop a suite and everything it started. Suites run in their own process group
+# (set -m below); Windows-native children (python.exe, node.exe) are outside MSYS
+# process groups, so on Windows the process tree is ended with taskkill as well.
+kill_tree() {
+  local pid="$1" tree p w
+  if [ -n "${SB_WINDOWS:-}" ]; then
+    # MSYS ps: PID PPID PGID WINPID … (a status letter may lead). Walk PPID links from
+    # the suite down, plus everything in the suite's process group (set -m below), then
+    # end each process by MSYS PID and by Windows PID.
+    tree=$(ps 2>/dev/null | awk -v root="$pid" '
+      NR > 1 { if ($1 !~ /^[0-9]+$/) { $1 = ""; $0 = $0 } ; pp[$1] = $2; pg[$1] = $3; wp[$1] = $4 }
+      END { keep[root] = 1; changed = 1
+            for (p in pg) if (pg[p] == root) keep[p] = 1
+            while (changed) { changed = 0
+              for (p in pp) if (!(p in keep) && (pp[p] in keep)) { keep[p] = 1; changed = 1 } }
+            for (p in keep) if (p != root) print p, wp[p]
+            print root, wp[root] }')  # the suite last: its children first
+    while read -r p w; do
+      [ -n "$p" ] || continue
+      kill -KILL "$p" 2>/dev/null || true
+      [ -z "$w" ] || taskkill //F //T //PID "$w" >/dev/null 2>&1 || true
+    done <<EOF
+$tree
+EOF
+  fi
+  kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  sleep 2
+  kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+}
+
+# run_limited <seconds> <cmd…>: portable timeout (macOS has no GNU timeout).
+run_limited() {
+  local limit="$1" pid wd rc marker
+  shift
+  marker=$(mktemp "${TMPDIR:-/tmp}/sb-suite-timeout.XXXXXX")
+  rm -f "$marker"
+  set -m
+  "$@" </dev/null &
+  pid=$!
+  set +m
+  # The watchdog writes nothing to the suite's output, so a sleep it leaves behind can
+  # never hold a $(…) or pipe open, and it is not waited for when the suite finishes in
+  # time (a signal can be slow to reach a waiting MSYS bash). Once the limit fires it
+  # ignores TERM and is waited for: the suite can die before kill_tree has reached its
+  # children (Windows ends them one by one), and they must not outlive the run.
+  (
+    trap 'kill "$sp" 2>/dev/null; exit 0' TERM
+    sleep "$limit" &
+    sp=$!
+    wait "$sp"
+    trap '' TERM
+    : > "$marker"
+    kill_tree "$pid"
+  ) </dev/null >/dev/null 2>&1 &
+  wd=$!
+  wait "$pid"
+  rc=$?
+  if [ -e "$marker" ]; then
+    wait "$wd" 2>/dev/null || true
+    rc=124; rm -f "$marker"
+    echo "::error::timed out after ${limit}s; stopped the suite" >&2
+  else
+    kill -TERM "$wd" 2>/dev/null || true
+  fi
+  return "$rc"
+}
 
 shopt -s nullglob
 suites=(tests/test-*.sh tests/test_*.py)
@@ -14,11 +93,13 @@ suites=(tests/test-*.sh tests/test_*.py)
 failed=()
 for suite in "${suites[@]}"; do
   echo "::group::$suite"
+  start=$SECONDS
   case "$suite" in
-    *.sh) bash "$suite" ;;
-    *.py) python3 "$suite" ;;
+    *.sh) run_limited "$SUITE_LIMIT" bash "$suite" ;;
+    *.py) run_limited "$SUITE_LIMIT" python3 "$suite" ;;
   esac
   rc=$?
+  echo "[run-safety] $suite exit $rc in $((SECONDS - start))s"
   echo '::endgroup::'
   if [ "$rc" -ne 0 ]; then
     failed+=("$suite")

@@ -2,7 +2,7 @@
 """Resolve the actual host-visible worker chain. Read-only; exits 10 if incomplete.
 
 --cards accepts an array file or stdin (-). --hydrate fills absent issue bodies via
-our guarded GitHub reader before resolution. --profile setup checks the pack and
+our guarded GitHub reader (or, with --config naming another provider, the forge's `ticket view`) before resolution. --profile setup checks the pack and
 unconditional helper union. --home and --catalog isolate authoritative inventories.
 No directory, lockfile, or plugin cache is evidence of an available skill.
 """
@@ -15,6 +15,19 @@ import re
 import stat
 import subprocess
 import sys
+
+# Windows: run tools by PATHEXT or through Git Bash, UTF-8 stdio (super-board-compat.py).
+import importlib.util as _ilu, os as _os, shutil as _sh, subprocess as _sp, types as _ty
+_cpath = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'super-board-compat.py')
+if _os.path.isfile(_cpath):
+    _cspec = _ilu.spec_from_file_location('sb_compat', _cpath)
+    compat = _ilu.module_from_spec(_cspec)
+    _cspec.loader.exec_module(compat)
+else:  # a partial copy without the helper (tests copy a few scripts): tools by bare name, as before
+    compat = _ty.SimpleNamespace(
+        WINDOWS=False, ToolMissing=FileNotFoundError, command_line=lambda argv: argv,
+        resolve=lambda name: [_sh.which(name)] if _sh.which(name) else None,
+        argv_for=lambda argv: [str(a) for a in argv], run=_sp.run, popen=_sp.Popen, utf8_stdio=lambda: None)
 
 POLICY = 'skills/super-build/references/decision-policy.md'
 REGISTRY = {
@@ -203,7 +216,7 @@ def codex_disabled(config_path, root, home):
             elif not quote and char == '#':
                 return line[:index].strip()
         return line.strip()
-    for raw in config_path.read_text().splitlines():
+    for raw in config_path.read_text(encoding='utf-8').splitlines():
         line = uncomment(raw)
         if not line:
             continue
@@ -266,7 +279,7 @@ class Inventory:
             self.claude_plugins()
         else:
             # Codex discovery stops at this independent repository's root.
-            process = subprocess.run(['git', '-C', str(self.root), 'rev-parse', '--show-toplevel'],
+            process = compat.run(['git', '-C', str(self.root), 'rev-parse', '--show-toplevel'],
                                      text=True, capture_output=True)
             boundary = Path(process.stdout.strip()).resolve() if process.returncode == 0 else self.root
             scoped = [self.root]
@@ -301,7 +314,7 @@ class Inventory:
                     self.disabled.clear()
                     self.catalog_only = True
         if catalog:
-            data = json.loads(Path(catalog).read_text())
+            data = json.loads(Path(catalog).read_text(encoding='utf-8'))
             if not isinstance(data, dict) or data.get('host') != host or not isinstance(data.get('skills'), list):
                 raise ValueError('unsupported active skill catalog: expected host and skills array')
             for entry in data['skills']:
@@ -326,7 +339,7 @@ class Inventory:
         settings = {}
         for path in [self.home / '.claude/settings.json', self.root / '.claude/settings.json', self.root / '.claude/settings.local.json']:
             if path.exists():
-                data = json.loads(path.read_text())
+                data = json.loads(path.read_text(encoding='utf-8'))
                 if not isinstance(data, dict):
                     raise ValueError('unsupported Claude settings: expected an object')
                 enabled = data.get('enabledPlugins', {})
@@ -336,7 +349,7 @@ class Inventory:
         manifest = self.home / '.claude/plugins/installed_plugins.json'
         if not manifest.exists():
             return
-        data = json.loads(manifest.read_text())
+        data = json.loads(manifest.read_text(encoding='utf-8'))
         if not isinstance(data, dict):
             raise ValueError('unsupported Claude installed plugin metadata: expected an object')
         plugins = data.get('plugins')
@@ -419,15 +432,41 @@ def report(root, host, cards=None, profile=None, lane=None, require=(), home=Non
                 remediation='Install the exact missing skills in a visible host surface or supply an enabled active catalog, then restart explicitly.')
 
 
-def hydrate(cards, root):
+def config_text_if_forge(config):
+    """The config's text when it names a provider other than GitHub (read once: it may be a FIFO), else None.
+    GitHub and "no config" keep the original guarded `gh` reads."""
+    if not config:
+        return None
+    try:
+        text = Path(config).read_text(encoding='utf-8')
+        provider = json.loads(text).get('provider', 'github')
+    except (OSError, ValueError, AttributeError) as error:
+        raise ValueError(f'config unreadable: {config}: {error}')
+    return text if provider != 'github' else None
+
+
+def hydrate(cards, root, config=None):
     helper = Path(__file__).with_name('super-board-github-read.py')
+    forge = Path(__file__).with_name('super-board-forge.py')
+    config_text = config_text_if_forge(config)
+    viewed = {}
     def read_issue(number, kind, fields):
-        process = subprocess.run([sys.executable, str(helper), '--kind', kind, '--', 'issue', 'view', str(number),
-                                  '--json', fields], cwd=root, text=True, capture_output=True)
+        if config_text is not None and number in viewed:
+            return viewed[number]
+        if config_text is not None:
+            # Provider-neutral: one forge read has the body and the labels ({name} objects) on every provider.
+            process = subprocess.run([sys.executable, str(forge), '--config', '-', 'ticket', 'view', str(number)],
+                                     cwd=root, input=config_text, text=True, encoding='utf-8', capture_output=True)
+        else:
+            process = subprocess.run([sys.executable, str(helper), '--kind', kind, '--', 'issue', 'view', str(number),
+                                      '--json', fields], cwd=root, text=True, capture_output=True)
         if process.returncode:
             print(process.stderr, file=sys.stderr, end='')
             raise SystemExit(process.returncode)
-        return json.loads(process.stdout)
+        data = json.loads(process.stdout)
+        if config_text is not None:
+            viewed[number] = data
+        return data
     for card in cards:
         if not isinstance(card, dict) or type(card.get('number')) is not int or card['number'] < 1:
             raise ValueError('card needs a positive number before issue hydration')
@@ -463,17 +502,18 @@ def main(argv=None):
     parser.add_argument('--home', default=os.environ.get('SUPER_BOARD_SKILLS_HOME'))
     parser.add_argument('--catalog', default=os.environ.get('SUPER_BOARD_SKILLS_CATALOG'))
     parser.add_argument('--hydrate', action='store_true')
+    parser.add_argument('--config', help='project config: names the provider for --hydrate (GitHub when absent)')
     args = parser.parse_args(argv)
     try:
         for name in args.require:
             worker_name(name)
         if args.profile and args.lane:
             raise ValueError('--profile setup checks the full union; --lane requires selected cards')
-        cards = json.loads(sys.stdin.read() if args.cards == '-' else Path(args.cards).read_text()) if args.cards else None
+        cards = json.loads(sys.stdin.read() if args.cards == '-' else Path(args.cards).read_text(encoding='utf-8')) if args.cards else None
         if cards is not None and not isinstance(cards, list):
             raise ValueError('cards must be an array')
         if args.hydrate and cards is not None:
-            hydrate(cards, args.root)
+            hydrate(cards, args.root, args.config)
         result = report(args.root, args.host, cards, args.profile, args.lane, args.require, args.home, args.catalog)
         print(json.dumps(result))
         for entry in result['entries']:

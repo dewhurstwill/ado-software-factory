@@ -1,6 +1,6 @@
 name: cross-platform
 
-# All offline safety suites run on Linux/macOS. Windows checks the status reader.
+# All offline safety suites run on Linux, macOS, and Windows under Git Bash.
 # Reused by release.yml so a failed suite prevents the publish job from running.
 permissions:
   contents: read
@@ -20,6 +20,11 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.9", "3.10", "3.12"]
+        # ubuntu-latest no longer offers Python 3.9; macOS (whose system Python
+        # is 3.9) and Windows still cover it.
+        exclude:
+          - os: ubuntu-latest
+            python: "3.9"
 
     steps:
       - uses: actions/checkout@v4
@@ -69,6 +74,13 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         python: ["3.9", "3.12"]
+        # ubuntu-latest no longer offers Python 3.9: Linux checks 3.10 instead.
+        exclude:
+          - os: ubuntu-latest
+            python: "3.9"
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
 
     steps:
       - uses: actions/checkout@v4
@@ -90,6 +102,57 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: runtime-evidence-${{ matrix.os }}-py${{ matrix.python }}
+          path: ${{ runner.temp }}/runtime-test-evidence
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Windows runs the same offline suites under Git Bash, which is the shell
+  # Claude Code itself uses there. Green since 2026-11-27 and required: a failing
+  # Windows suite blocks a release like a failing Linux or macOS one.
+  safety-windows:
+    name: safety (windows-latest / Git Bash / py${{ matrix.python }})
+    runs-on: windows-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.12"]
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      # Git for Windows defaults to core.autocrlf=true; .gitattributes must win.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Tool versions as the scripts will find them
+        run: |
+          for t in bash python3 python py git jq node curl tar; do
+            printf '%-8s %s\n' "$t" "$(command -v "$t" || echo MISSING)"
+          done
+          python3 --version || true
+          jq --version || true
+          printf 'a\nb\n' | jq -R . | od -c | head -3
+          # CreateProcess finds System32's bash.exe (WSL) before PATH for a bare 'bash'.
+          ls -l /c/Windows/System32/bash.exe 2>&1 || true
+          python -c "import shutil; print('python which bash:', shutil.which('bash'))"
+      - name: Run every offline safety suite
+        env:
+          SB_RUNTIME_TEST_ARTIFACTS: ${{ runner.temp }}/runtime-test-evidence
+        run: bash tests/run-safety.sh
+      - name: Keep runtime test evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-evidence-windows-py${{ matrix.python }}
           path: ${{ runner.temp }}/runtime-test-evidence
           if-no-files-found: ignore
           retention-days: 7

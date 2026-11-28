@@ -12,6 +12,7 @@
 #   bash tests/test-collect-baseline.sh
 
 set -uo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="$REPO_ROOT/skills/super-collect/scripts/super-collect-file.sh"

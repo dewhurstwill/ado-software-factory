@@ -3,6 +3,7 @@
 # workflows/super-board-wave.js. Expected summary keys are read from the workflow itself.
 # Stubbed Codex only (tests/fixtures/fake_codex.py). No network.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 KIT=$(cd "$(dirname "$0")/.." && pwd)
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/repo" "$T/bare" "$T/home"

@@ -1,10 +1,12 @@
-# Second GitHub account for the robot
+# Second account for the robot
+
+GitHub: steps 1–5 below. Azure DevOps: the last section, "Azure DevOps: a separate identity for the agent".
 
 Follow this when onboard step 2 chooses "Yes". Allow about 10 minutes.
 Keep the owner active until step 3 has picked or created the Project.
 Replace every `<placeholder>` below before running a command. NEVER read a `.env` file.
 
-## Why
+## Why (GitHub)
 
 GraphQL calls from `gh issue`, `gh pr` and `gh project` use the signed-in user's
 [5,000 points/hr](https://docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api).
@@ -17,13 +19,13 @@ A machine user gets its own 5,000/hr. Robot comments show its name; the owner's 
 allow one free machine account alongside your personal account. A personal account cannot request
 a higher limit. Enterprise limits are higher, but those costly plans are meant for companies.
 
-## 1. Only the person — create the account
+## 1. Only the person — create the GitHub account
 
 Create it on github.com: `<owner>-bot` or `<Owner>Service` works well.
 A Gmail address like `you+bot@gmail.com` lands in your usual inbox.
 Complete signup yourself; tell the agent only the username. Keep it for automation.
 
-## 2. Agent — grant access as the owner
+## 2. Agent — grant GitHub access as the owner
 
 Use the original repo owner and the Project owner from onboard, not the bot's username.
 
@@ -49,7 +51,7 @@ Use the IDs returned by the first two commands in the mutation.
 [Mutation fields](https://docs.github.com/en/graphql/reference/projects#updateprojectv2collaborators).
 For an org-owned Project, have its admin grant the bot Write access in the org's Project settings.
 
-## 3. Only the person — create and install the token
+## 3. Only the person — create and install the GitHub token
 
 Signed in as the bot, open Settings → Developer settings → Personal access tokens →
 Tokens (classic) → Generate new token (classic). Expiry: **30 days**.
@@ -76,7 +78,7 @@ DON'T run the literal word `TOKEN` or put the token after `login`.
 Agents MUST NOT type tokens: secret-guard hooks block it. NEVER paste the token into chat.
 If it appeared in chat, rotate it after the run.
 
-## 4. Agent — accept the invite and verify as the bot
+## 4. Agent — accept the GitHub invite and verify as the bot
 
 ```bash
 gh auth switch -u <bot>
@@ -94,7 +96,7 @@ The bot has its own 5,000-point bucket; remaining may be just below 5,000 after 
 If a token environment override defeats account switching, stop and ask the person to clear it.
 NEVER print token values or read dotenv files to diagnose it.
 
-## 5. Agent — keep claim identity stable
+## 5. Agent — keep claim identity stable (GitHub)
 
 Stage `notifications.bot_identity` as the bot username for new boards; save at onboard step 8.
 Existing boards may keep the owner's name. The bot can assign either account.
@@ -106,6 +108,25 @@ Optional per-run fallback: the person may ask the orchestrator to also use the o
 Before each wave, with no workers running, check `gh api rate_limit`. If GraphQL remaining is
 below ~3,000, `gh auth switch -u <other>` and check again. Keep the other account only if it has
 more; otherwise switch back. Keep existing rate guards and halt rules; NEVER switch mid-wave.
+
+## Azure DevOps: a separate identity for the agent
+
+Azure DevOps has no point budget to split, so the reason here is trust, not quota. Approval of a
+held merge is a comment `done` from an identity on `ado.approvers` (providers.md → "Human
+approval"). With one PAT, the agent and the approver are the same identity: an identity that is both
+`whoami` and on `ado.approvers` MAY approve (providers.md → "Solo identity"), and nothing can tell
+the person's `done` from an agent holding their token.
+
+- Give the agent its own identity: a service account's PAT (Work Items read/write + Code
+  read/write), or a service principal signed in with `az login`. Only the person creates it and
+  installs the token as `AZURE_DEVOPS_EXT_PAT` (environment or the project's `.env`); agents
+  never type it.
+- Put the humans who may release a held merge on `ado.approvers`, never the agent's identity. The
+  agent's identity can then post approval requests but never approve.
+- Check with `python3 .claude/bin/super-board-forge.py --config <cfg> whoami`: it must print the
+  agent's identity, not the person's.
+- The claim tag does not change with the identity (it is per machine and checkout), so switching
+  identities never orphans a claim.
 
 ## End of run
 

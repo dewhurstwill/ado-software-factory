@@ -5,6 +5,7 @@ import pathlib
 import subprocess
 import tempfile
 import unittest
+import sbtest  # Git Bash on Windows, pinned git settings
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CHECK = ROOT / "scripts/super-board-verification-ready.py"
@@ -23,7 +24,7 @@ class VerificationReadiness(unittest.TestCase):
                 self.assertIn("verify_commands", result.stderr)
                 self.assertIn("verification-readiness", result.stderr)
                 # Planner must reject before it reads the supplied (nonexistent) items.
-                result = subprocess.run(["bash", str(ROOT / "scripts/super-board-wave-plan.sh"),
+                result = subprocess.run([sbtest.BASH, str(ROOT / "scripts/super-board-wave-plan.sh"),
                                          "--config", str(path), "--items", str(path.parent / "absent")],
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 9, result.stderr)
@@ -54,9 +55,9 @@ class VerificationReadiness(unittest.TestCase):
                         else ["--cards", json.dumps([card])])
                 if launcher == "super-board-lane.sh":
                     args = ["--backend", "codex"] + args
-                result = subprocess.run(["bash", str(ROOT / "scripts" / launcher),
+                result = subprocess.run([sbtest.BASH, str(ROOT / "scripts" / launcher),
                                          "--config", str(config), "--codex"] + args,
-                                        cwd=root, env=dict(os.environ, PATH=str(binary.parent) + ":" + os.environ["PATH"]),
+                                        cwd=root, env=dict(os.environ, PATH=str(binary.parent) + os.pathsep + os.environ["PATH"]),
                                         capture_output=True, text=True)
                 self.assertEqual(result.returncode, 9, result.stderr)
                 self.assertTrue(json.loads(result.stdout)["status"] == "halted" if "lane" in launcher
@@ -76,7 +77,7 @@ class VerificationReadiness(unittest.TestCase):
             result = subprocess.run(command, capture_output=True, text=True)
             report = json.loads(result.stdout)
             self.assertFalse(report["green"])
-            self.assertIn("verify_commands", report["verification"][str(cfg.relative_to(root))])
+            self.assertIn("verify_commands", report["verification"][cfg.relative_to(root).as_posix()])
             text = subprocess.run(command + ["--text"], capture_output=True, text=True)
             self.assertIn("verification-readiness", text.stdout)
             self.assertEqual(json.loads(cfg.read_text())["verify_commands"], [" "])
@@ -87,7 +88,7 @@ class VerificationReadiness(unittest.TestCase):
             cfg = root / ".claude/super-board/configs/app.json"
             cfg.parent.mkdir(parents=True)
             cfg.write_text(json.dumps({"worker_backend": "claude-p", "verify_commands": []}))
-            result = subprocess.run(["bash", str(ROOT / "scripts/super-board-run.sh"), "app"],
+            result = subprocess.run([sbtest.BASH, str(ROOT / "scripts/super-board-run.sh"), "app"],
                                     cwd=root, capture_output=True, text=True)
             self.assertEqual(result.returncode, 9, result.stderr)
             self.assertFalse((root / "docs").exists())

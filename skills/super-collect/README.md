@@ -7,7 +7,7 @@ tickets go to `/implement-spec`; 6+ go to the super-board Backlog. See [routing]
 ## What It Does
 
 - Reads pluggable sources: **sentry** (unresolved errors), **posthog** (exceptions, failure
-  events, rage and dead clicks, slow pages, survey themes, tracking gaps), **github** (open issues
+  events, rage and dead clicks, slow pages, survey themes, tracking gaps), **github** (open tickets
   not on the board, adopted rather than copied), **prs** (recurring problems across merged PRs and
   their human, bot and super-review comments) and **architecture** (read-only refactor finder).
 - Checks every candidate with one fresh verifier: is it real, still happening, already fixed, or a
@@ -42,7 +42,7 @@ read-only. Secrets stay in `.env`: `SENTRY_AUTH_TOKEN` (scopes `event:read proje
 ## Install
 
 Ships in the super-board pack under `skills/super-collect/`; `install.sh` copies it to
-`.claude/skills/super-collect/`. Needs a super-board config, `gh`, `jq` and Python 3 (stdlib only).
+`.claude/skills/super-collect/`. Needs a super-board config, `jq`, Python 3 (stdlib only) and the board's provider access (`gh` on GitHub; an Azure DevOps token, see `skills/super-board/references/providers.md`).
 
 Tests: `python3 tests/test_collect_handoff.py` · `bash tests/test-collect-file.sh` · `bash tests/test-collect-fetchers.sh` ·
 `bash tests/test-collect-baseline.sh` · `python3 tests/test_collect_baseline.py` (offline, all in

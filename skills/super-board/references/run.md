@@ -2,20 +2,32 @@
 
 **Scope:** the lane lifecycles (Builder, Tester, Reviewer) that both backends use, and the legacy `claude-p` runner (`worker_backend: "claude-p"`). The default in-session wave loop is in `run-workflow.md`.
 
-**Where the legacy runner runs:** headless. Spawned as a `nohup`-backgrounded process; the current Claude session exits immediately after dispatch. The runner script (`scripts/super-board-run.sh`) is a pure shell while-loop that dispatches one `claude -p` worker per lane and never holds Claude session state. Each `claude -p` worker is its own short-lived headless context — load this file at the start of every lane.
+**Where the legacy runner runs:** headless. Spawned as a `nohup`-backgrounded process; the current Claude session exits immediately after dispatch. The runner script (`scripts/super-board-run.sh`) is a pure shell while-loop that dispatches one `claude -p` worker per lane and never holds Claude session state. Each `claude -p` worker is its own short-lived headless context — load this file at the start of every lane. The legacy runner exits 78 on any provider but GitHub; the lane lifecycles below serve both.
 
-## Required GitHub reads can pause a run
+**Providers.** Tickets, the board, PRs and merges go through one command on GitHub and Azure DevOps
+alike: `python3 .claude/bin/super-board-forge.py --config <cfg> <verb>` (written `forge <verb>` below;
+always type the full command). [providers.md](providers.md) lists every verb, its output and exit codes.
+Nouns: **ticket** = GitHub issue / Azure DevOps work item; **label** = label / work item tag; **claim** =
+assignee / claim tag (`forge ticket claim`, `forge ticket release`); **board** = the GitHub Project
+(`project.owner` + `project.number`) / the team's Azure DevOps board (`ado.organization`, `ado.project`,
+`ado.team`, `ado.board`). Where this file says issue, it means the ticket; the fixed formats the pack writes
+(`issue-<N>-<slug>` branches, `Closes #N`, comment headers) stay as they are. `super-board-gh-guard.sh` and
+`super-board-preflight.sh` take no `--config`; they read the provider from `SB_CONFIG`, so set it in the same
+Bash call (`export SB_CONFIG=<cfg>; source .claude/bin/super-board-gh-guard.sh; …`, `SB_CONFIG=<cfg> bash …`).
 
-Use `.claude/bin/super-board-github-read.py` for required API evidence. It retries
+## Required reads can pause a run
+
+Every forge read is a required read. It retries
 one failed read at most twice (three total attempts); invalid queries or missing
 authority halt immediately. Exit **79** means stop dispatch and pause the current
 run. Never substitute an empty board, OPEN issue, full quota, or empty diff.
-Check the helper's `--check` before each write, migration, or merge. Preserve
+Check `forge check` before each write, migration, or merge. Preserve
 worktrees, claims, card/approval state, and the shared local halt record. Report
-the reason locally when GitHub cannot accept a comment. Do not blindly retry a
+the reason locally when the provider cannot accept a comment. Do not blindly retry a
 mutation: a lost response may conceal a successful write. Confirm its remote
-outcome once service is available before resuming. Recovery and workflow
-checkpoint limitations: [run-workflow.md](run-workflow.md#required-github-evidence-and-a-paused-run).
+outcome once service is available before resuming. Only pass a ticket or PR number you read from the
+board or an earlier command: a missing number exits 3 on Azure DevOps but halts the run (79) on GitHub.
+Restart after exit 79 with `forge resume` (it replays the failed read on either provider and archives the halt only when it passes; a halt from an uncertain write is refused). Recovery and workflow checkpoint limitations: [run-workflow.md](run-workflow.md#required-evidence-and-a-paused-run).
 
 ## Orchestrator delegation contract (NON-NEGOTIABLE)
 
@@ -31,7 +43,7 @@ The orchestrator MUST NOT:
 - Build, test, review, or fix issues itself. All product work is delegated to `claude -p` workers via `dispatch_lane`.
 - Patch the dispatcher script or skill files unless the user explicitly asked for that change. Drift fixes belong in a follow-up issue, not a side-edit during a run dispatch.
 - Wait for workers to finish. Workers run in their own contexts and write evidence back to the issue + PR. The orchestrator's output to the user is the dispatch confirmation, not the run result.
-- Hold context for multi-card progress. Workers own the state machine via the GitHub Project board + assignee mutex + inflight lock files.
+- Hold context for multi-card progress. Workers own the state machine via the board + claim mutex + inflight lock files.
 
 If a problem surfaces during the run (bug in the dispatcher, missing skill, stuck card), the orchestrator should: (a) capture the symptom, (b) tell the user what they observed, (c) wait for explicit approval before touching anything. **Do not silently expand the task into "fix the dispatcher while you're at it" — that's the orchestrator becoming a worker.**
 
@@ -42,7 +54,7 @@ When the user asks for diagnostics or a fix, prefer dispatching a focused `claud
 ```
 🤖 super-board run
 ─────────────────────────────────────────────────────────
-Purpose: the autonomous loop. Drains your GitHub Project board.
+Purpose: the autonomous loop. Drains your board.
 
 Progress: ✅ onboard  →  ✅ lint  →  🤖 run (you are here)
 ─────────────────────────────────────────────────────────
@@ -62,17 +74,17 @@ bounded receipt and delegate the external skill after normal final reconciliatio
 |---|---|
 | Usable verification commands | Run `python3 .claude/bin/super-board-verification-ready.py --config <config>`. Exit 9 halts setup before dispatch: configure the owning project's checks, then restart explicitly. |
 | Active config exists | Halt: "Run `super-board onboard` first." |
-| Project + required columns exist | Halt: "Project / columns missing. Run `super-board onboard` to repair." |
-| `gh auth` valid with required scopes | Halt: "Re-auth: `gh auth refresh -s project,read:project,repo`." |
+| Board + required columns exist | Halt: "Project / columns missing. Run `super-board onboard` to repair." |
+| Credentials valid (`forge whoami`): GitHub `gh auth` with required scopes; Azure DevOps a token (`AZURE_DEVOPS_EXT_PAT` or `az login`, else the forge exits 69) | Halt: GitHub "Re-auth: `gh auth refresh -s project,read:project,repo`."; Azure DevOps "Set `AZURE_DEVOPS_EXT_PAT` (or run `az login`) and re-run." |
 | `pre-flight.md` all items `[✓]` | Halt: "Pre-flight incomplete — fix these: [list]." |
 | No issues missing ACs in active columns | Halt: "N issues need clarification. Run `super-board lint`." |
 | Clean git working tree on base branch | Halt: "Working tree dirty. Stash or commit before running." |
 | Legacy worktrees | If `.worktrees/issue-*` exists, halt before dispatch. Stop its worker, inspect/preserve edits, then `git worktree move` it to the matching `.claude/worktrees/` path. Never delete it as part of an upgrade. |
 | Stale worktree scan | Scan only `.claude/worktrees/issue-<N>` and `issue-<N>-build/qa/review`. If its named branch is gone, use `git worktree remove` without force. Keep detached, dirty, locked, unregistered, or unrelated folders; log failures for inspection. A missing board label alone is not permission to delete work. |
 | Production-merge guard | If `base_branch == "main"` AND `human_approves_merge == false` AND `merge_policy.default != "human"` AND `merge_policy.allow_auto_on_production != true` AND production-detection signals fire (see onboard → base branch), halt with: `🛡 Refusing to start: would auto-merge to production main. Set merge_policy.default: "human", switch base_branch to staging, or re-run super-board onboard to opt in explicitly.` |
-| Orphan-worker scan (added 2026-05-22 after #381 worker storm) | `pgrep -f 'claude -p .*super-board run'` must return zero. If any super-board worker is already alive from a prior crashed run, halt with: `🛑 ${N} super-board workers already running. Stop them first: pkill -f 'claude -p .*super-board run'`. The dispatcher must never run while orphan workers exist — they will collide on assignee claims and produce duplicate PRs. |
+| Orphan-worker scan (added 2026-05-22 after #381 worker storm) | `pgrep -f 'claude -p .*super-board run'` must return zero. If any super-board worker is already alive from a prior crashed run, halt with: `🛑 ${N} super-board workers already running. Stop them first: pkill -f 'claude -p .*super-board run'`. The dispatcher must never run while orphan workers exist — they will collide on claims and produce duplicate PRs. |
 | Database reach | Run every `migrations.checks[env]` for an env in `allowed_envs` (read-only, e.g. `supabase migration list --db-url …`). On failure halt with its error: "Migrate URL for <env> does not connect — fix it before a wave builds work the gate cannot land." |
-| GraphQL rate-limit guard | Before each tick, `sb_gh_guard_check` (super-board-gh-guard.sh — it reads GraphQL's own `rateLimit`, because `gh api rate_limit` misreports the GraphQL bucket). If GraphQL remaining < 200, sleep until reset. Prevents the runner from dying mid-loop when the user has burned quota in another tool. |
+| Rate-limit guard | Before each tick, `sb_gh_guard_check` (super-board-gh-guard.sh, provider-aware). GitHub: it reads GraphQL's own `rateLimit`, because the REST rate-limit endpoint misreports the GraphQL bucket; if GraphQL remaining < 200, sleep until reset. Azure DevOps: no quota endpoint; it sleeps only on a saved low `remaining` (providers.md → "Rate limits on Azure DevOps"). Prevents the runner from dying mid-loop when the user has burned quota in another tool. |
 
 ## Lanes and label routing
 
@@ -124,7 +136,7 @@ A live site with no repo is not a board. `/super-qa <url>` tests it on its own.
 - **Never dispatch multiple workers from the same column just because that column has a backlog.** If all cards are in `Ready`, the runner dispatches exactly one worker for the top card — a Builder, or a Tester when the card is labelled `qa` — until it exits.
 - **Mixed-column example:** if `Ready`, `QA`, and `Review` each contain cards and all lanes are idle, the runner dispatches three workers: one Builder from `Ready`, one Tester from `QA`, and one Reviewer from `Review`.
 - **Downstream-first priority:** when multiple lanes are available, dispatch Review before QA before Ready/Build, so finished work gets closed before new build work starts.
-- **Lane idle gate:** a lane is eligible only when its prior worker process has exited. The runner must track lane PIDs or an equivalent lane lease; GitHub issue assignees are per-card mutexes, not lane-capacity controls.
+- **Lane idle gate:** a lane is eligible only when its prior worker process has exited. The runner must track lane PIDs or an equivalent lane lease; ticket claims are per-card mutexes, not lane-capacity controls.
 
 This means a board with 30 cards in `Ready` and zero elsewhere does **not** start 3 Builder sessions. It starts one Builder. As that Builder moves its card to `QA` and exits, the next tick can start one new Builder for the next `Ready` card and one Tester for the first `QA` card, because those are different lanes.
 
@@ -145,8 +157,9 @@ There is **exactly one branch per issue** and **exactly one PR per issue**. All 
 
 Format: `writing-standard.md` § 2. Title = the commit subject format
 (`✨ [feat] chat: stream replies`). The body is marker blocks; each lane rewrites only its own
-with `.claude/bin/super-board-pr-body.sh --pr <P> --block <name> --expect-head <sha>
-(--body-file | --append-file) <md>`. The script refuses (exit 6) when the PR head moved since you
+with `.claude/bin/super-board-pr-body.sh --config <cfg> --pr <P> --block <name> --expect-head <sha>
+(--body-file | --append-file) <md>` (it goes through `forge pr body` / `forge pr set-body`; on Azure DevOps
+the forge keeps the description under its 4,000-character limit). The script refuses (exit 6) when the PR head moved since you
 read it — re-read, then redo the edit. Builder opens the PR with every block filled
 (`super-board-pr-body.sh --skeleton` prints the empty markers).
 
@@ -241,9 +254,9 @@ e2e/streaming/ttfb.spec.ts:18   [qa] [issue] spec asserts status only — add a 
 |---|---|---|
 | Builder (Building → QA) | All `[builder]` threads on this PR | Stay in Building, fix, then exit |
 | Tester (QA → Review) | All `[qa]` threads on this PR | Stay in QA, fix, then exit |
-| Reviewer (approving merge) | All findings and human requests; any conversations GitHub requires resolved | Bounce: `[builder]` open → Ready; `[qa]` open → QA; unresolved human decision → Blocked |
+| Reviewer (approving merge) | All findings and human requests; any conversations the provider requires resolved (branch protection / branch policy) | Bounce: `[builder]` open → Ready; `[qa]` open → QA; unresolved human decision → Blocked |
 
-Threads are resolved via `gh api graphql` `resolveReviewThread` mutation when the fix is committed.
+Threads are read with `forge pr threads <PR>` and resolved with `forge pr thread-resolve <PR> <thread id>` when the fix is committed.
 
 ## Lane lifecycles (per card)
 
@@ -256,10 +269,11 @@ cards, before `runLane('build')`. Legacy `claude-p` backend: the Builder runs it
 in a sub-agent, before touching a worktree.
 
 ```
-[ ] source .claude/bin/super-board-gh-guard.sh; sb_gh_guard_check 200
-[ ] build the in-flight list: .claude/bin/super-board-card.sh --config <cfg> items (one call) → [{number,title,status}] for
-    Building / QA / Review / Ready cards; save it to a temp file
-[ ] bash .claude/bin/super-board-preflight.sh --repo <owner/name> --issues <N[,M…]> \
+[ ] export SB_CONFIG=<cfg>; source .claude/bin/super-board-gh-guard.sh; sb_gh_guard_check 200
+[ ] build the in-flight list: python3 .claude/bin/super-board-forge.py --config <cfg> board items (one call)
+    → [{number,title,status}] for Building / QA / Review / Ready cards; save it to a temp file
+[ ] SB_CONFIG=<cfg> bash .claude/bin/super-board-preflight.sh \
+         --repo "$(python3 .claude/bin/super-board-forge.py --config <cfg> repo)" --issues <N[,M…]> \
          --inflight <file> [--files <paths you expect to touch>]
 [ ] judge each card: the script's verdict, then its `candidates` (near-misses) semantically
 [ ] act on the outcome below, then return one verdict per card
@@ -316,7 +330,9 @@ column), never built unchecked. `qa` cards are not pre-flighted: nothing is buil
    push what you have, propose the split (vertical slices via `/to-tickets`) in a PR comment and
    move the card to Blocked `❓` — never push on past the cap (super-build → "Keep each PR small").
 5. Commit + push (always). Commits follow writing-standard.md § 1 (`✨ [feat] chat: stream replies` + short bullets).
-6. Open draft PR linked to the issue with the PR description template (title in commit-subject format, every block filled).
+6. Open draft PR linked to the issue with the PR description template (title in commit-subject format, every block filled):
+   `forge pr create --draft --base <base> --head issue-<N>-<slug> --title "<title>" --body-file "$F" --closes <N>`
+   (prints the URL, then the PR number). A partial PR leaves out `--closes` and says `Refs #N`.
 7. Follow [PR author notes](pr-author-notes.md), then post the `[builder] [report]` PR comment (see "Commenting cadence").
 8. Post a short status comment on the issue with the PR URL.
 9. Clean up worktree. Keep branch + PR open.
@@ -326,7 +342,7 @@ column), never built unchecked. `qa` cards are not pre-flighted: nothing is buil
 
 1. Worktree as above.
 2. Read PR review threads on this branch's PR; filter `[builder]` prefix.
-3. For each unresolved `[builder]` thread: read file:line + suggested fix, apply, resolve thread via graphql mutation.
+3. For each unresolved `[builder]` thread: read file:line + suggested fix, apply, resolve thread via `forge pr thread-resolve <PR> <thread id>`.
 4. Address any new failure feedback from Tester's latest `❌` comment.
    (A Reviewer bounce reaches you as those same `[builder]` threads, listed in the latest `<!-- super-review:report -->` comment. A finding the Reviewer re-opened as `not fixed` was resolved without a fix last time — fix the code, not just the thread.)
 5. Commit + push to same branch.
@@ -351,7 +367,7 @@ Record uncovered/stale optional coverage alongside ordinary issue AC checks.
 
 #### Screenshot embed format (mandatory on every QA exit — added 2026-05-22)
 
-Inline screenshots in the GitHub comment using raw-URL markdown so they render directly on the issue/PR page without anyone having to clone the repo:
+Inline screenshots in the comment using raw-URL markdown so they render directly on the ticket/PR page without anyone having to clone the repo (the URL below is GitHub's raw-file form; no Azure DevOps form is defined yet, see writing-standard.md § 2):
 
 ```markdown
 | Viewport | Screenshot |
@@ -362,14 +378,14 @@ Inline screenshots in the GitHub comment using raw-URL markdown so they render d
 ```
 
 Substitution rules:
-- `<OWNER>/<REPO>` — read from `git remote get-url origin` (parse owner/name).
+- `<OWNER>/<REPO>` — `forge repo` (GitHub prints owner/name).
 - `<SHA>` — the commit that added the screenshots (`git rev-parse HEAD` right after committing them), never a branch name: the branch is deleted on merge and a branch URL breaks. Push before you post.
 - `<N>` and `<V>` — issue number + QA version (`v1`, `v2`, ...).
 - File names — keep them stable and descriptive (`desktop.png`, `tablet.png`, `mobile.png`, or `before-fix-desktop.png` / `after-fix-desktop.png` for rebuild-pass cases).
 
 For non-visual ACs (API tests, migration SQL, etc.), skip the screenshot block but keep the evidence-path line. Tests output (logs, REPORT.md) still goes in the evidence folder.
 
-If a screenshot file is >5MB, downscale to ≤1920px wide before committing; GitHub's image rendering chokes on huge images.
+If a screenshot file is >5MB, downscale to ≤1920px wide before committing; image rendering in comments chokes on huge images.
 
 ### Tester (rebuild — when Reviewer bounced for `[qa]` thread fixes)
 
@@ -387,7 +403,7 @@ If a screenshot file is >5MB, downscale to ≤1920px wide before committing; Git
 2. **Gate 1** — scan PR threads and their replies. [PR author notes](pr-author-notes.md)
    alone are explanations, not findings. Human questions or change requests in those
    threads still follow the normal review/blocking flow; the marker exempts no replies.
-   Never auto-resolve them or bypass GitHub's conversation-resolution requirements.
+   Never auto-resolve them or bypass the provider's conversation-resolution requirements.
    If ANY unresolved finding:
    - `[builder]` open → comment, move card Review → Ready.
    - `[qa]` open → comment, move card Review → QA.
@@ -396,8 +412,8 @@ If a screenshot file is >5MB, downscale to ≤1920px wide before committing; Git
 3. Read the issue ACs and the raw diff (code + test files) FIRST and write 2–4 hypotheses of your own — what must hold, where it would break. Only then read the PR description, the `[builder] [report]` comment and Tester's handoff, and check each claim like a hypothesis. Spot-check Tester's evidence (one screenshot at least), read CLAUDE.md / AGENTS.md.
 3b. **Prior-report check (review remembers — added 2.5.0).** Load the last Reviewer report on this PR as `prior_report`. One call:
    ```
-   gh pr view <PR> --json comments \
-     --jq '[.comments[] | select(.body | contains("<!-- super-review:report -->"))] | last | {url, body} // {}'
+   python3 .claude/bin/super-board-forge.py --config <cfg> pr comments <PR> \
+     | jq '[.[][] | select(.body | contains("<!-- super-review:report -->"))] | if length == 0 then {} else (last | {id, body}) end'
    ```
    - Empty → first review of this card. Skip to step 4; behave exactly as before.
    - Non-empty → the card was bounced and rebuilt. **Round 1** walks every finding in `prior_report` and marks each one `fixed` / `not fixed` / `no longer applies` (code it pointed at is gone or the AC changed), citing the file:line that proves it. A resolved thread is not proof — check the code.
@@ -413,7 +429,7 @@ If a screenshot file is >5MB, downscale to ≤1920px wide before committing; Git
 6. **Adversarial mode** (per `truth_gate`): when triggered, spawn 2 sub-agents in parallel:
    - **Code-grounder** — verify cited file:line still exists and matches claims.
    - **Historian** — `git blame` the changed lines, check for ADRs / prior incidents.
-   - **Budget cap (added 2026-05-22): each sub-agent ≤50 gh calls.** Prefer local `git blame` / `git log` over `gh api graphql`. If a sub-agent needs >50 calls to reach confidence, it returns `confidence: "insufficient_data"` and the Reviewer flags the card as 🛡 truth-check inconclusive instead of burning the shared quota. See `rate-limit-etiquette.md`.
+   - **Budget cap (added 2026-05-22): each sub-agent ≤50 provider calls (gh or forge).** Prefer local `git blame` / `git log` over remote reads. If a sub-agent needs >50 calls to reach confidence, it returns `confidence: "insufficient_data"` and the Reviewer flags the card as 🛡 truth-check inconclusive instead of burning the shared quota. See `rate-limit-etiquette.md`.
    - **Brief:** use the fixed sub-agent brief in super-review → "Adversarial mode" verbatim. Never write your own. It states that Over-engineering is Should fix, never Blocker on its own, and never lowers confidence.
    - Aggregate into a confidence score (0-100). Compare against `config.truth_threshold` (default 70).
    - **Below threshold** — Reviewer MUST NOT approve. Open a `[reviewer]`-prefixed PR thread quoting the lowest-confidence sub-agent finding, write the full Block template comment (see §4 Block/Skip), move card Review → Blocked with reason tag 🛡 truth-check failed (confidence X/100). The card stays Blocked until human review; the bot's "Why I cannot decide" line names the specific sub-agent finding it could not confirm.
@@ -426,7 +442,7 @@ If a screenshot file is >5MB, downscale to ≤1920px wide before committing; Git
    - **Test-side new finding** → open new `[qa]`-prefixed PR thread, comment, move card Review → QA (label `loop:rebuild-N`).
    - **CI-budget block (💳, added 2026-05-22)** — if remote CI jobs `failed_to_start` due to `Actions budget` AND `config.auto_merge_on_ci_budget_block` is true AND local-evidence is strong (truth ≥ threshold, Tester suite green on rerun in step 5, all `[builder]`/`[qa]` threads clean) → **squash-merge anyway** on local evidence; do NOT move to Blocked. Write the PR's `redcheck` block (`> [!WARNING]` · `🔴 Merged with a failing check: <check> · CI budget block`) and a `[reviewer] [report] ✅ merged · CI-budget bypass` comment on the PR and the issue citing: (a) the failed CI run ID, (b) the Tester pass-count, (c) the truth-gate score. Reason: CI failure-to-start ≠ test failure; with strong local evidence, parking the card wastes pipeline time. This bypass is ONLY for `💳` — never for `🛡` truth-fail, `🔐` missing creds, or `🧑` human-only decisions.
    - **Human-gate / Blocker finding (destructive schema, API contract, money, auth, live-DB migration) / rebuild cap hit (config.rebuild_cap)** → write the full Block template (see §4), move card Review → Blocked. A clean PR that only *touches* money, auth or schema is not a blocker — run the merge protocol; the gate's `merge_policy` routes it to a human (exit 7 → 🙋 Blocked).
-8. Write the **Reviewer report** on every exit from step 3b on — bounce, block, human gate, merge (a Gate 1 thread bounce reviews nothing and writes none). It is ONE comment per PR, **edited in place** each round: find it by the marker (step 3b's lookup, plus `.url` — the number after `#issuecomment-` is its id) and `gh api -X PATCH repos/<owner>/<repo>/issues/comments/<id> -F body=@<file>`; post a new comment only when none exists. It is what step 3b reads next time, so the first line is the stable marker and every finding keeps its id (writing-standard.md § 4):
+8. Write the **Reviewer report** on every exit from step 3b on — bounce, block, human gate, merge (a Gate 1 thread bounce reviews nothing and writes none). It is ONE comment per PR, **edited in place** each round: find it by the marker (step 3b's lookup; `.id` is its id, an opaque string) and `forge pr comment-edit <PR> <id> --body-file <file>`; post a new comment (`forge pr comment <PR> --body-file <file>`) only when none exists. It is what step 3b reads next time, so the first line is the stable marker and every finding keeps its id (writing-standard.md § 4):
 
    ```
    <!-- super-review:report -->
@@ -447,38 +463,40 @@ If a screenshot file is >5MB, downscale to ≤1920px wide before committing; Git
 
 ### Merge protocol (Reviewer only — added 2026-08-06, issue #9)
 
-Builder opens every PR as a **draft**, and GitHub will not merge a draft: `gh pr merge --auto`
-on a draft queues forever and never fires. A run that skipped this step produced two
+Builder opens every PR as a **draft**, and neither provider merges a draft: on GitHub an auto-merge
+on a draft queues forever and never fires; Azure DevOps refuses it (`pr merge` exit 65). A run that skipped this step produced two
 substantial builds and landed **zero commits on `main` in six hours**. The Reviewer must
 walk these steps in order, and the card **must not reach Done until the merge is confirmed
 on the base branch**.
 
 ```
-1. Mark ready      gh pr ready <PR>                     # idempotent; no-op if already ready
+1. Mark ready      python3 .claude/bin/super-board-forge.py --config <config> pr ready <PR>   # idempotent
 2. Merge through the gate (step 5), pinned to the reviewed head — never a bare
-   `gh pr merge`. The gate applies `merge_policy` (who merges; `default: "human"`
+   merge command. The gate applies `merge_policy` (who merges; `default: "human"`
    keeps a person on every merge) and `migrations` (which databases the robot may
    migrate) itself; the Reviewer does not second-guess either, it routes the exit code.
 3. Confirm the merge LANDED, do not trust the exit code:
-     gh pr view <PR> --json state,mergeCommit -q '.state + " " + (.mergeCommit.oid // "none")'
+     python3 .claude/bin/super-board-forge.py --config <config> pr state <PR> \
+       | jq -r '.state + " " + (.mergeCommit.oid // "none")'
      Expect: MERGED <sha>.  Then verify the sha is reachable from the base branch:
      git fetch origin <base> && git merge-base --is-ancestor <sha> origin/<base>
-4. Only after step 3 passes: close the issue, move card Review → Done, rewrite `status` (`> [!TIP]` ✅ Merged) and append the `history` row, post the `[reviewer] [report] ✅ merged` comment
+4. Only after step 3 passes: close the issue (`forge ticket close <N> --reason completed`, which also
+   moves the card to Done; a squash message carrying `Closes #N` may already have closed it), move card Review → Done, rewrite `status` (`> [!TIP]` ✅ Merged) and append the `history` row, post the `[reviewer] [report] ✅ merged` comment
    citing the merge commit sha.
-5. Merge through the gate, never with a bare `gh pr merge`. Record the head you
+5. Merge through the gate, never with a bare merge command. Record the head you
    reviewed when review passes, and hand it to the gate:
-     HEAD=$(gh pr view <N> --json headRefOid -q .headRefOid)   # at the moment review passes
+     HEAD=$(python3 .claude/bin/super-board-forge.py --config <config> pr view <N> | jq -r .headRefOid)   # at the moment review passes
      bash .claude/bin/super-board-merge-gate.sh --config <config> --pr <N> --expect-head "$HEAD" \
        --subject "<PR title>" --body-file <msg.md>
    <msg.md> = the PR's commit bullets, deduplicated, plus `Closes #<issue>` (writing-standard.md § 1).
    The gate takes the merge mutex, checks the PR head is still $HEAD, merges the CURRENT
    base into a scratch worktree at $HEAD, runs `config.verify_commands`, and only then
-   squash-merges with `--match-head-commit $HEAD`. After a merge it runs `cleanup-wt --post-merge`
+   squash-merges pinned to $HEAD (`forge pr merge --match-head $HEAD`). After a merge it runs `cleanup-wt --post-merge`
    when the `.claude/hooks/cleanup-wt.py` hook is installed (local only; a cleanup failure never changes the exit). Route by exit code:
      9 → verification-readiness: halt the run and preserve card, approval, claims, and worktree. Repair `config.verify_commands` with the project's real checks, then restart explicitly. Never bounce to Build, retry a rebase, or bypass the gate.
      0 → merged; continue to step 4
      2 → the branch no longer builds against the base → **rebase pass** (see below)
-     3 → GitHub refused after a green verify (branch protection, required check)
+     3 → the provider refused after a green verify (branch protection / branch policy, required check)
           → Blocked with the §4 template; this one really is a human's
      4 → another card holds the merge lock → leave the card in Review, next wave retries
      5 → the base does not merge in cleanly → **rebase pass** (see below)
@@ -535,6 +553,7 @@ Next: <builder | qa | reviewer | Eric | none>
 - Run the prose through `humanizer` when installed (else the plain-words rules in
   writing-standard.md).
 - The **issue comment** is the same header plus the PR link; the PR comment carries the detail.
+  Post them with `forge ticket comment <N> --body-file F` and `forge pr comment <PR> --body-file F`.
 
 Builder exit (PR):
 
@@ -589,7 +608,7 @@ column.
 ## Per-tick logic (~30s cadence)
 
 ```
-1. Refresh project items + column counts via gh api
+1. Refresh board items + column counts via `forge board items`
 2. Re-validate preconditions (auth, pre-flight, columns)
 3. Downstream-first dispatch by lane capacity:
    ├─ Review has cards + Reviewer idle → dispatch top of Review
@@ -599,38 +618,39 @@ column.
 
    Allocation rule: at most ONE worker per lane at a time.
    Max concurrency = 3 total workers (Builder + Tester + Reviewer),
-   but never 3 Builders from a Ready backlog. GitHub issue assignees prevent two workers claiming the same card;
+   but never 3 Builders from a Ready backlog. Ticket claims prevent two workers claiming the same card;
    the runner still must track lane idleness separately to prevent multiple
    same-lane workers.
 4. Wait for any lane to finish OR 30s timeout
-5. Re-read project state (lane may have moved a card)
+5. Re-read board state (lane may have moved a card)
 6. Loop until done conditions met
 ```
 
 ## Worker contract (every lane on claim)
 
-Claim uses a **GitHub Issue assignee mutex** — atomic compare-and-set via `gh issue edit --add-assignee`. Labels are descriptive only; the assignee is the lock.
+Claim uses a **ticket claim mutex** — compare-and-set via `forge ticket claim <N>`, which re-reads and verifies its own write (GitHub: the assignee; Azure DevOps: a per-holder claim tag). Labels are descriptive only; the claim is the lock.
 
 ```
 1. ATTEMPT CLAIM (atomic):
-   ├─ `gh issue edit <N> --add-assignee super-board-bot[bot]`
-   │      (if a different assignee is already set → 422; treat as "already claimed")
-   ├─ On 422 / conflict → another worker has it; skip this dispatch.
+   ├─ `forge ticket claim <N>`
+   │      (someone else already holds it, or the race was lost → exit 4; treat as "already claimed")
+   ├─ On exit 4 → another worker has it; skip this dispatch.
    └─ On success → continue. Apply descriptive label
        (loop:in-build / loop:in-qa / loop:in-review) for UI clarity only.
 2. SANITY CHECK: issue body has `## Acceptance Criteria` with ≥1 bullet
    ├─ Missing → write the full Block template (see §4) with reason ❓
-   │           release claim (`gh issue edit --remove-assignee`)
+   │           release claim (`forge ticket release <N>`)
    │           move card to Blocked, continue with next card.
    └─ Present → proceed.
 3. Do the lane's work (build / QA / review).
 4. If this lane opened a PR or pushed changes, refresh [PR author notes](pr-author-notes.md).
    Comment evidence on issue + PR (writing-standard.md § 4) and rewrite your PR body blocks.
 5. Move card to next column (or Blocked with the full §4 template; dropped on purpose → closed, Done, 🤷 comment).
-6. RELEASE CLAIM (`gh issue edit --remove-assignee super-board-bot[bot]`) and remove descriptive label.
+6. RELEASE CLAIM (`forge ticket release <N>`) and remove descriptive label
+   (`forge ticket edit <N> --remove-label loop:in-<lane>`).
 ```
 
-The `super-board-bot[bot]` identity is either (a) a GitHub App installed on the repo, or (b) the user's own account on solo projects — onboard step 2 picks which. The assignee mutex is reliable because GitHub serializes assignee writes per issue.
+On GitHub the claimant (`notifications.bot_identity`, e.g. `super-board-bot[bot]`) is either (a) a GitHub App installed on the repo, or (b) the user's own account on solo projects — onboard step 2 picks which. The assignee mutex is reliable because GitHub serializes assignee writes per issue. On Azure DevOps the claim is a tag per holder (a stable id for the machine and checkout); two claimers on the same machine and checkout are separated by the inflight lockfiles, not the tag (providers.md → "Claim").
 
 ### Anti-zombie addendum (added 2026-05-22 after #381 worker storm)
 
@@ -643,7 +663,7 @@ The dispatcher MUST also:
 3. **Cap one worker per lane** — track `BUILD_PID` / `QA_PID` / `REVIEW_PID`; do not dispatch to a lane whose prior PID is still alive.
 4. **Reap stale locks each tick** — `reap_finished_locks` removes any lock whose PID no longer exists.
 5. **Orphan-scan on startup** — refuse to start if any `claude -p .*super-board run` worker is already running from a prior crashed dispatcher.
-6. **One board read per tick** — `super-board-card.sh items` once per tick, not per column lookup (~1 GraphQL point per 100 cards).
+6. **One board read per tick** — `forge board items` once per tick, not per column lookup (GitHub: ~1 GraphQL point per 100 cards).
 
 The three locks (assignee, in-flight file, lane PID) are defense in depth: any one of them alone has a race window; together they make a duplicate dispatch effectively impossible.
 
@@ -764,30 +784,30 @@ Records: config used, columns, target, per-card history (claim → completion �
 - **Block-rate alert** — when Blocked count exceeds `config.block_rate_alert_pct` of initial Ready: ping with breakdown ("11/30 Ready cards blocked: 🔐×6, 💳×3, ❓×2 — see project board"). One-shot per run (does not re-fire).
 - **Final** — end column counts, total moved to Done, blockers (with reason-tag breakdown), total wall-clock.
 
-## Worker rate-limit etiquette (read before any burst of gh calls)
+## Worker rate-limit etiquette (read before any burst of provider calls)
 
-Workers share the dispatcher's gh-auth token bucket. The dispatcher's `gh_rate_guard` does NOT protect worker traffic. Every worker MUST follow `rate-limit-etiquette.md` (in this directory):
+Workers share the dispatcher's token bucket. The dispatcher's `gh_rate_guard` does NOT protect worker traffic. Every worker MUST follow `rate-limit-etiquette.md` (in this directory):
 
-- Move and read cards with `.claude/bin/super-board-card.sh --config <cfg> move <issue> <Status>` / `status <issue>` — 1 GraphQL point. Every "move card X → Y" in the lifecycles above means this call. Comments, labels and PR reads go over REST (`rate-limit-etiquette.md` → "Price list").
+- Move and read cards with `python3 .claude/bin/super-board-forge.py --config <cfg> board move <issue> <Status>` / `board status <issue>` (GitHub: 1 GraphQL point). Every "move card X → Y" in the lifecycles above means this call. Comments, labels and PR reads are forge verbs too; on GitHub they go over REST (`rate-limit-etiquette.md` → "Price list").
 
-- Source `scripts/super-board-gh-guard.sh` at worker start.
-- Call `sb_gh_guard_check 200` before any burst of gh calls (thread reads, sub-agent spawn, exit verification).
-- Adversarial sub-agents are capped at 50 gh calls each — prefer `git blame` (local) over `gh api graphql`.
-- Final PR handoff comment MUST include `gh-quota-on-exit: graphql=<n>/5000 rest=<n>/5000` (use `sb_gh_guard_summary`).
-- On 403 / secondary-rate-limit: sleep 60s, re-check at threshold 500, then resume.
+- Source `scripts/super-board-gh-guard.sh` at worker start, with `SB_CONFIG=<cfg>` exported in the same Bash call.
+- Call `sb_gh_guard_check 200` before any burst of provider calls (thread reads, sub-agent spawn, exit verification).
+- Adversarial sub-agents are capped at 50 provider calls each — prefer `git blame` (local) over remote reads.
+- Final PR handoff comment MUST include the `gh-quota-on-exit:` line from `sb_gh_guard_summary`: GitHub `gh-quota-on-exit: graphql=<n>/5000 rest=<n>/5000`; Azure DevOps `gh-quota-on-exit: azure-devops remaining=<n>/<limit> cost=<total> throttled=<429s>`.
+- On 403 / secondary-rate-limit (GitHub): sleep 60s, re-check at threshold 500, then resume. Azure DevOps: the forge waits out a 429 (`Retry-After`) itself and records it; the wave throttle steps `max_workers` down on it.
 
 ## Worker self-check (mandatory on exit, every lane)
 
-Before releasing the claim assignee and exiting, every worker MUST verify:
+Before releasing the claim and exiting, every worker MUST verify:
 
 - [ ] Issue comment AND PR comment both written (per "Commenting cadence" above).
-- [ ] Card column move's mutation returned success. **Trust the exit code of `super-board-card.sh move`** — a re-read of the board was the per-worker quota tax (`rate-limit-etiquette.md` §3). If the mutation returned non-zero, preserve its unknown outcome, leave the assignee in place, and pause the run locally. Reconcile the remote card state before any repeat; never blindly retry a write or depend on a successful halt comment.
-- [ ] Claim assignee released (`gh issue edit --remove-assignee <bot_identity>`) and the descriptive `loop:in-*` label removed.
+- [ ] Card column move's mutation returned success. **Trust the exit code of `forge board move`** — a re-read of the board was the per-worker quota tax (`rate-limit-etiquette.md` §3). If the mutation returned non-zero, preserve its unknown outcome, leave the claim in place, and pause the run locally. Reconcile the remote card state before any repeat; never blindly retry a write or depend on a successful halt comment.
+- [ ] Claim released (`forge ticket release <N>`) and the descriptive `loop:in-*` label removed.
 - [ ] On failure handoff: `root-cause-hash:` line is present in the PR handoff comment (per "Root-cause hash" above).
 - [ ] On Block/Skip exit: the full template from `block-template.md` is populated on BOTH the issue and the PR (if a PR exists); the reason emoji is one of the nine in the vocabulary table (🔐 💳 🔑 ❓ 🛡 🧑 🤷 📦 🎨).
 - [ ] `gh-quota-on-exit:` line appended to PR handoff comment.
 
-A worker that cannot satisfy this checklist must NOT release its claim. It either fixes the gap and re-checks, or — if the gap itself is structural (e.g., GitHub API refusing to move the card) — it leaves the assignee in place and writes a halt comment so the runner's "no progress for 3 ticks" gate can fire deterministically.
+A worker that cannot satisfy this checklist must NOT release its claim. It either fixes the gap and re-checks, or — if the gap itself is structural (e.g., the provider refusing to move the card) — it leaves the claim in place and writes a halt comment so the runner's "no progress for 3 ticks" gate can fire deterministically.
 
 ### Known issue — multi-attempt card moves (added 2026-05-22)
 

@@ -2,6 +2,7 @@
 # Tests docs/hosts.md — every host value super-board-host.sh accepts in its SUPER_BOARD_HOST
 # case has a table row, and README's Install section links the page.
 set -euo pipefail
+. "$(cd "$(dirname "$0")" && pwd)/sbtest.sh"  # compat shims, pinned git settings, fake_tool
 cd "$(dirname "$0")/.."
 fail() { echo "FAIL: $1" >&2; exit 1; }
 DOC=docs/hosts.md

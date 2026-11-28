@@ -5,7 +5,19 @@ from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-import fcntl
+try:
+    import fcntl
+except ImportError:  # Windows: the collector locks byte 0 with msvcrt (super-board-collect-state.py)
+    fcntl = None
+    import msvcrt
+
+
+def hold_lock(stream):
+    if fcntl:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+    else:
+        stream.seek(0)
+        msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
 import hashlib
 import time
 
@@ -75,7 +87,7 @@ class IntakeTests(unittest.TestCase):
         (self.root/'body.md').write_text(BODY)
         cfg={'project':{'owner':'acme','number':7,'title':'Board'},'repo':{'remote':'https://github.com/acme/app.git','path':'.'}}
         (self.root/'config.json').write_text(json.dumps(cfg));(self.root/'other.json').write_text(json.dumps(cfg))
-        self.env=dict(os.environ,PATH=str(self.root)+':'+os.environ['PATH'],FIXTURE_ROOT=str(self.root),
+        self.env=dict(os.environ,PATH=str(self.root)+os.pathsep+os.environ['PATH'],FIXTURE_ROOT=str(self.root),
             SUPER_BOARD_BIN=str(ROOT/'scripts'),SB_GITHUB_HALT_FILE=str(self.root/'halt.json'),
             SB_GITHUB_RETRY_DELAY='0',SB_COLLECT_STATE_DIR=str(self.root/'collector-state'))
         self.argv=[str(ROUTER),'--config',str(self.root/'config.json'),'--type','feature','--source','custom',
@@ -110,7 +122,7 @@ class IntakeTests(unittest.TestCase):
         state=self.root/'collector-state';state.mkdir()
         key=hashlib.sha256(b'acme/app').hexdigest()
         with (state/(key+'.lock')).open('w') as lock:
-            fcntl.flock(lock,fcntl.LOCK_EX)
+            hold_lock(lock)
             before=time.monotonic();result=self.run_filer(SB_COLLECT_LOCK_TIMEOUT='.05')
             self.assertEqual(result.returncode,4,result.stderr)
             self.assertLess(time.monotonic()-before,3)

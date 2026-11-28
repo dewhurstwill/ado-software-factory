@@ -1,23 +1,25 @@
 ---
 name: super-build
-description: Builder lane of the super-board pipeline — takes a `Ready` GitHub Project card into its own per-issue git worktree, makes the smallest safe change test-first (TDD, `ponytail` simplest-first, official docs first for third-party APIs, upgrades and auth/billing), opens a draft PR and hands it to QA and Review through the board; it never merges — merges go through the Reviewer's merge gate. Inside `super-board run` it runs as a lane agent in the in-session wave workflow (`workflows/super-board-wave.js`, no worker cap unless `max_workers` is set); standalone headless `claude -p` dispatch is legacy opt-in. Use when the user says "Super Build", "run the build loop", "/super-build", or invokes the skill.
+description: Builder lane of the super-board pipeline — takes a `Ready` board card into its own per-ticket git worktree, makes the smallest safe change test-first (TDD, `ponytail` simplest-first, official docs first for third-party APIs, upgrades and auth/billing), opens a draft PR and hands it to QA and Review through the board; it never merges — merges go through the Reviewer's merge gate. Inside `super-board run` it runs as a lane agent in the in-session wave workflow (`workflows/super-board-wave.js`, no worker cap unless `max_workers` is set); standalone headless `claude -p` dispatch is legacy opt-in. Use when the user says "Super Build", "run the build loop", "/super-build", or invokes the skill.
 ---
 
-# Super Build — Builder lane and legacy headless GitHub-Project executor
+# Super Build — Builder lane and legacy headless board executor
 
-Inside `super-board run`, Super Build is the Builder lane: a lane agent in the in-session wave workflow (`workflows/super-board-wave.js`) that follows "super-board integration" below. Run on its own, `/super-build` is the **legacy headless path (opt-in)**: you are the orchestrator, the source of truth is the **`Ready` column of the configured GitHub Project board**, and your job is to dispatch every issue in `Ready` (in board order) as a headless `claude -p` worker in its own git worktree, open a PR for each finished branch, and move its card to `QA` so the Tester and Reviewer take it from there. Super Build never merges — merging happens only through the Reviewer's merge gate (`scripts/super-board-merge-gate.sh`).
+Inside `super-board run`, Super Build is the Builder lane: a lane agent in the in-session wave workflow (`workflows/super-board-wave.js`) that follows "super-board integration" below. Run on its own, `/super-build` is the **legacy headless path (opt-in)**: you are the orchestrator, the source of truth is the **`Ready` column of the configured board**, and your job is to dispatch every ticket in `Ready` (in board order) as a headless `claude -p` worker in its own git worktree, open a PR for each finished branch, and move its card to `QA` so the Tester and Reviewer take it from there. Super Build never merges — merging happens only through the Reviewer's merge gate (`scripts/super-board-merge-gate.sh`).
 
 **Curation contract:** the human moves cards into `Ready` when they should be worked. The loop never reads `Backlog`, `In Progress`, or `Done` cards. If `Ready` is empty, the loop reports "queue empty" and exits cleanly — no error.
 
-**This skill is single-purpose: EXECUTE curated GitHub Project `Ready` issues.** It is INDEPENDENT of `/super-qa` / **Super QA** (the autonomous bug-bash loop that hardens shipped code). They share no state unless a `super-board run` sequences them through the board. Run **Super Build** to make forward progress on the issue queue; run **Super QA** to bug-bash the existing codebase. They CAN run concurrently in different orchestrator sessions, but expect merge conflicts if both touch the same files.
+**This skill is single-purpose: EXECUTE curated `Ready` tickets.** It is INDEPENDENT of `/super-qa` / **Super QA** (the autonomous bug-bash loop that hardens shipped code). They share no state unless a `super-board run` sequences them through the board. Run **Super Build** to make forward progress on the ticket queue; run **Super QA** to bug-bash the existing codebase. They CAN run concurrently in different orchestrator sessions, but expect merge conflicts if both touch the same files.
+
+**Providers.** Tickets, the board, PRs and merges go through one command on GitHub and Azure DevOps alike: `python3 .claude/bin/super-board-forge.py --config <cfg> <verb>` (written `forge <verb>` below; always type the full command). [providers.md](../super-board/references/providers.md) lists every verb, its output and exit codes. Nouns: **ticket** = GitHub issue / Azure DevOps work item; **label** = label / work item tag; **claim** = assignee / claim tag (`forge ticket claim`, `forge ticket release`); **board** = the GitHub Project (`project.owner` + `project.number`) / the team's Azure DevOps board (`ado.organization`, `ado.project`, `ado.team`, `ado.board`). Only pass a ticket or PR number you read from the board or an earlier command: a missing number exits 3 on Azure DevOps but halts the run (79) on GitHub.
 
 ## Role boundary
 
-Super Build is the canonical builder. Do not use a separate `build-feature` workflow. If the user wants a one-off feature, first create or curate a GitHub issue/card with clear acceptance criteria, move it to `Ready`, then let Super Build execute it.
+Super Build is the canonical builder. Do not use a separate `build-feature` workflow. If the user wants a one-off feature, first create or curate a ticket/card with clear acceptance criteria, move it to `Ready`, then let Super Build execute it.
 
-Super Build may implement, test, commit, push, open PRs, and move project cards to `QA`. It never merges, closes issues, or moves cards to `Done` — the Reviewer does that through the merge gate. It should not invent new product scope beyond the issue body. If the issue needs product/design/security judgment, apply the human-gate or WIP-partial path instead of guessing.
+Super Build may implement, test, commit, push, open PRs, and move board cards to `QA`. It never merges, closes tickets, or moves cards to `Done` — the Reviewer does that through the merge gate. It should not invent new product scope beyond the ticket body. If the ticket needs product/design/security judgment, apply the human-gate or WIP-partial path instead of guessing.
 
-**GitHub budget** — every "move card" is `.claude/bin/super-board-card.sh --config <cfg> move <N> <Status>` (1 GraphQL point; `gh project item-list` / `field-list` cost ~100–200). Comments, labels and PR reads go over REST; [rate-limit-etiquette.md](../super-board/references/rate-limit-etiquette.md) → "Price list" has the calls.
+**Budget** — every "move card" is `forge board move <N> <Column>` (GitHub: 1 GraphQL point, where a full project listing costs ~100–200). On GitHub the forge sends comments, labels and PR reads over REST; [rate-limit-etiquette.md](../super-board/references/rate-limit-etiquette.md) → "Price list" has the costs, and its Azure DevOps section the counterpart.
 
 ## Configuration
 
@@ -25,11 +27,17 @@ The orchestrator needs to know which project board to read.
 
 ### Standalone mode (legacy)
 
-Reads `Ready` from the repo's feature project. Resolution order:
+Reads `Ready` from the board named by the super-board config (`<cfg>`, `.claude/super-board/configs/<slug>.json`): `project.owner` + `project.number` on GitHub, the `ado` block on Azure DevOps.
+
+#### GitHub: no super-board config
+
+Without a config the board is the repo's feature project. Resolution order:
 
 1. **`BUILD_LOOP_PROJECT`** env var — project number (e.g. `2`)
 2. **`BUILD_LOOP_OWNER`** env var — project owner (e.g. `EricTechPro`)
 3. **Auto-discovery fallback:** if env vars unset, run `gh project list --owner $(gh repo view --json owner -q .owner.login) --format json` and pick the project whose `title` matches the repo name, or the only open project if there's exactly one.
+
+Azure DevOps has no config-less path: the board is always the config's `ado` block.
 
 Surface: `🎯 Reading project: <owner>/<title> (#<n>), column "Ready"`.
 
@@ -40,9 +48,9 @@ Surface: `🎯 Reading project: <owner>/<title> (#<n>), column "Ready"`.
 Before reading the board:
 
 - Confirm the main worktree is clean: `git status --porcelain` must be empty.
-- Confirm `gh auth status` works and the repo remote points at the expected GitHub repo.
+- Confirm the provider answers: `forge whoami` prints a login, and `forge repo` names the expected repository.
 - Confirm `jq`, `git`, and `claude` are available.
-- Resolve and print `BUILD_LOOP_OWNER` and `BUILD_LOOP_PROJECT`.
+- Resolve and print the board (`BUILD_LOOP_OWNER` and `BUILD_LOOP_PROJECT` on a config-less GitHub run).
 - Run `git fetch origin` and identify the base branch from the current checkout; do **not** assume `main`.
 
 ### 1. Read the source column
@@ -52,15 +60,15 @@ Source column is `Ready` (override with `BUILD_LOOP_SOURCE_COLUMN`):
 ```bash
 SOURCE_COLUMN="${BUILD_LOOP_SOURCE_COLUMN:-Ready}"
 
-.claude/bin/super-board-card.sh --owner "$BUILD_LOOP_OWNER" --number "$BUILD_LOOP_PROJECT" items \
+python3 .claude/bin/super-board-forge.py --config <cfg> board items \
   | jq --arg col "$SOURCE_COLUMN" '.items[] | select(.status == $col and .content.type == "Issue")'
 ```
 
-`super-board-card.sh items` is the `gh project item-list` shape for ~1 GraphQL point per 100 cards (item-list spends 101) — without bodies.
+`forge board items` returns every card without bodies (GitHub: the project item-list shape for ~1 GraphQL point per 100 cards, where item-list itself spends 101). A config-less GitHub run reads the same shape with `.claude/bin/super-board-card.sh --owner "$BUILD_LOOP_OWNER" --number "$BUILD_LOOP_PROJECT" items`.
 
 For each Ready item:
-- Capture `content.number` (issue #), `content.title` and `labels`; read the body over REST: `gh api repos/{owner}/{repo}/issues/<N> --jq .body`.
-- **Skip** issues with the `loop:in-progress` label (in flight in another orchestrator) or `loop:halted` label (manually paused) or `human-gated` label (requires manual handling).
+- Capture `content.number` (ticket #), `content.title` and `labels`; read the body: `forge ticket view <N> | jq -r .body`.
+- **Skip** tickets with the `loop:in-progress` label (in flight in another orchestrator) or `loop:halted` label (manually paused) or `human-gated` label (requires manual handling).
 - Parse `body` for `Depends on: #N1, #N2` lines (case-insensitive). If any dep is still open AND not in the current Ready set, the issue is blocked — leave it for a future run.
 - Parse `body` for an optional `Skills:` line (e.g. `Skills: mattpocock-skills:tdd, verification-before-completion`). If absent, the worker uses defaults from the preamble.
 
@@ -72,17 +80,17 @@ If `Ready` is empty: print `📭 Project board "Ready" column is empty — nothi
 
 ### 1b. Resolve the selected worker skills before locks
 
-Hydrate each selected issue through `super-board-github-read.py --kind issue --
-issue view <N> --json number,title,body`. Save a JSON array with number, Ready
+Hydrate each selected ticket through `forge ticket view <N>` (the same
+retry and halt as every required read). Save a JSON array with number, Ready
 status, labels and literal body. Run `.claude/bin/super-board-skills-ready.py
 --root <repo> --host claude --cards <cards.json> --lane build` before label
 creation, stale-lock recovery, comments or dispatch. Exit 10 halts and names the
 missing helpers. Preserve existing claims and worktrees. No automatic helper
 installation during dispatch. The dispatcher and worker repeat this check.
 
-### 2. Ensure required labels exist (idempotent)
+### 2. GitHub: ensure required labels exist (idempotent)
 
-Once per run, before first dispatch:
+Once per run, before first dispatch (Azure DevOps labels are work item tags and need no creation; skip this step there):
 ```bash
 gh label create loop:in-progress --color FFA500 --description "Currently being worked on by /super-build" 2>/dev/null || true
 gh label create loop:halted --color B60205 --description "Manually paused — /super-build will skip" 2>/dev/null || true
@@ -97,14 +105,16 @@ Report once per wave: `▶️ Super Build dispatching: Issues [#N1, #N2, #N3] (p
 
 For each issue N in the ready set (up to the cap at a time):
 
-a. **Lock the issue:**
+a. **Lock the ticket:**
 ```bash
-gh issue edit N --add-label loop:in-progress
+python3 .claude/bin/super-board-forge.py --config <cfg> ticket edit N --add-label loop:in-progress
 ```
 
-b. **Announce on the issue** (so a human reading the issue page knows it's being worked):
+b. **Announce on the ticket** (so a human reading the ticket page knows it's being worked):
 ```bash
-gh issue comment N --body "🤖 Dispatched by /super-build — worker spinning up in worktree \`.claude/worktrees/issue-N\` on branch \`loop/issue-N\`. Skills: <skills-line-from-body-or-defaults>."
+F=$(mktemp)
+printf '%s\n' "🤖 Dispatched by /super-build — worker spinning up in worktree \`.claude/worktrees/issue-N\` on branch \`loop/issue-N\`. Skills: <skills-line-from-body-or-defaults>." > "$F"
+python3 .claude/bin/super-board-forge.py --config <cfg> ticket comment N --body-file "$F"
 ```
 
 c. **Dispatch:**
@@ -115,7 +125,7 @@ bash .claude/skills/super-build/scripts/super-build-dispatch.sh N
 
 The dispatcher (this skill's `scripts/super-build-dispatch.sh`) handles:
 - `git worktree add -b loop/issue-N .claude/worktrees/issue-N <base-branch>`
-- `gh issue view N --json title,body,labels` to compose the worker prompt
+- reads the ticket's title, body and labels to compose the worker prompt
 - prepend `references/worker-preamble.md` + append working-directory footer
 - `cd` into worktree and exec `claude -p --dangerously-skip-permissions --output-format stream-json --verbose --max-turns 250`
 - verify the worker produced a `🔧 [chore] loop: close #N` commit on its branch
@@ -130,41 +140,42 @@ Poll BashOutput on each in-flight shell. As each finishes:
 After creating either a complete or partial PR below, follow
 [PR author notes](../super-board/references/pr-author-notes.md) before reporting the
 handoff complete. Add file summaries and critical inline notes on the PR, not in source.
+Every comment below is written to a file first (`F=$(mktemp)`, the exact text, then `--body-file "$F"`).
 
 **On dispatcher exit 0 (success):**
 - `git -C .claude/worktrees/issue-N push -u origin loop/issue-N`
-- `gh pr create --draft --base <base-branch> --head loop/issue-N --title "<emoji> [<type>] <scope>: <subject>" --body-file <body.md>` — title in commit-subject format, body = the marker-block template from `skills/super-board/references/run.md` (writing-standard.md § 2), `Closes #N` in the status card, `Docs:` bullets in Solution, Door + Blast radius in Risk
-- `gh issue edit N --remove-label loop:in-progress`
-- `gh issue comment N --body "[builder] [report] ✅ built · PR <URL>"` (Next line: `qa`)
-- Move the project card to `QA`. The Tester and Reviewer take it from there; the issue closes when the Reviewer merges through the merge gate.
+- `python3 .claude/bin/super-board-forge.py --config <cfg> pr create --draft --base <base-branch> --head loop/issue-N --title "<emoji> [<type>] <scope>: <subject>" --body-file <body.md> --closes N` (prints the URL, then the PR number on the last line) — title in commit-subject format, body = the marker-block template from `skills/super-board/references/run.md` (writing-standard.md § 2), `Closes #N` in the status card, `Docs:` bullets in Solution, Door + Blast radius in Risk
+- `python3 .claude/bin/super-board-forge.py --config <cfg> ticket edit N --remove-label loop:in-progress`
+- `python3 .claude/bin/super-board-forge.py --config <cfg> ticket comment N --body-file "$F"` with `[builder] [report] ✅ built · PR <URL>` (Next line: `qa`)
+- Move the board card to `QA` (`forge board move N QA`). The Tester and Reviewer take it from there; the ticket closes when the Reviewer merges through the merge gate.
 - Leave the worktree in place — the merge gate (after the merge) or the cleanup-wt SessionStart hook removes it once the work is on the base branch.
 - Report: `✅ Super Build issue #N → PR <URL>, card in QA`
-- Recompute ready set; if new issues are now unblocked, dispatch in the next wave (respecting the worker cap)
+- Recompute ready set; if new tickets are now unblocked, dispatch in the next wave (respecting the worker cap)
 
 **On dispatcher exit 5 (intentional WIP-PARTIAL — open a partial PR, do NOT close):**
 - `git -C .claude/worktrees/issue-N push -u origin loop/issue-N`
-- `gh pr create --draft --base <base-branch> --head loop/issue-N --title "🚧 [wip] <scope>: <slice from worker's final message>"` — the status card says `Refs #N`, never `Closes`, so the merge does not close the issue.
-- `gh issue edit N --remove-label loop:in-progress --add-label human-gated`
-- `gh issue comment N --body "[builder] [report] ⚠️ partial · PR <URL>\nDid: <slice>\n❌ Not done: <worker's reason for stopping>\nNext: Eric"` — the issue stays open with `human-gated` until the rest lands.
+- `python3 .claude/bin/super-board-forge.py --config <cfg> pr create --draft --base <base-branch> --head loop/issue-N --title "🚧 [wip] <scope>: <slice from worker's final message>" --body-file <body.md>` — no `--closes`: the status card says `Refs #N`, never `Closes`, so the merge does not close the ticket.
+- `python3 .claude/bin/super-board-forge.py --config <cfg> ticket edit N --remove-label loop:in-progress --add-label human-gated`
+- `python3 .claude/bin/super-board-forge.py --config <cfg> ticket comment N --body-file "$F"` with `[builder] [report] ⚠️ partial · PR <URL>\nDid: <slice>\n❌ Not done: <worker's reason for stopping>\nNext: Eric` — the ticket stays open with `human-gated` until the rest lands.
 - Report: `🟡 Issue #N partial PR opened — issue stays open (human-gated)`
-- **Continue dispatching the next issue in the wave.** A WIP-PARTIAL is NOT a halt. The worker did intentional, scoped work and the orchestrator advances.
+- **Continue dispatching the next ticket in the wave.** A WIP-PARTIAL is NOT a halt. The worker did intentional, scoped work and the orchestrator advances.
 
 **On dispatcher exit 2 or 3 (worker failed or no done-commit):**
-- `gh issue edit N --remove-label loop:in-progress`
-- `gh issue comment N --body "[builder] [report] ❌ failed · exit <X>\nDid: worker ran; worktree \`.claude/worktrees/issue-N\` kept\n❌ Not done: <one line from the log>\nNext: Eric\n\n<details><summary>log tail</summary>\n\n\`\`\`\n$(tail -50 .planning/super-build-logs/issue-N.log)\n\`\`\`\n</details>"`
+- `python3 .claude/bin/super-board-forge.py --config <cfg> ticket edit N --remove-label loop:in-progress`
+- `python3 .claude/bin/super-board-forge.py --config <cfg> ticket comment N --body-file "$F"` with `"[builder] [report] ❌ failed · exit <X>\nDid: worker ran; worktree \`.claude/worktrees/issue-N\` kept\n❌ Not done: <one line from the log>\nNext: Eric\n\n<details><summary>log tail</summary>\n\n\`\`\`\n$(tail -50 .planning/super-build-logs/issue-N.log)\n\`\`\`\n</details>"`
 - Report to the user with `tail -50` of `.planning/super-build-logs/issue-N.log`
 - Do NOT open a PR; leave the worktree intact for human inspection
 - Halt the loop
 
 **On dispatcher exit 4 (HUMAN GATE TRIPPED):**
-- `gh issue edit N --remove-label loop:in-progress --add-label human-gated`
-- `gh issue comment N --body "🔴 HUMAN GATE TRIPPED — needs manual handling. See worktree \`.claude/worktrees/issue-N\`."`
+- `python3 .claude/bin/super-board-forge.py --config <cfg> ticket edit N --remove-label loop:in-progress --add-label human-gated`
+- `python3 .claude/bin/super-board-forge.py --config <cfg> ticket comment N --body-file "$F"` with `🔴 HUMAN GATE TRIPPED — needs manual handling. See worktree \`.claude/worktrees/issue-N\`.`
 - Report: `🔴 Issue #N tripped HUMAN GATE — needs manual handling`
 - Halt the loop
 
 ### 5. Final report
 
-When the selected GitHub Project `Ready` queue is empty, or only blocked cards remain: report a summary listing PRs opened this run (cards in `QA`), issues not built (`human-gated` / `loop:halted` / blocked dependencies), and any halts. Suggest: "Run `super-board run` to test, review and merge them."
+When the selected board's `Ready` queue is empty, or only blocked cards remain: report a summary listing PRs opened this run (cards in `QA`), tickets not built (`human-gated` / `loop:halted` / blocked dependencies), and any halts. Suggest: "Run `super-board run` to test, review and merge them."
 
 ## Issue contract
 
@@ -190,7 +201,7 @@ Super Build treats acceptance criteria as the completion contract. Workers must 
 
 - **Worker cap:** `max_workers` from the config when set, otherwise 3 on this legacy path (resource throttle). The workflow backend has no cap unless `max_workers` is set.
 - **Never auto-touch issues with `human-gated` label** (production cutover, secrets, irreversible ops).
-- **Never modify code in the main worktree** while workers are running. Only run `gh` commands and push/PR operations.
+- **Never modify code in the main worktree** while workers are running. Only run forge commands and push/PR operations.
 - **Conflicts** between concurrent workers' branches are not resolved here — they surface at the merge gate, and the card comes back to the Builder for a rebuild. Don't auto-resolve.
 - **Report cadence** (to the user, in the session): 1 message at start, 1 per dispatch wave, 1 per completion (success/fail), 1 final summary. Don't spam.
 - **Workers MUST use the right skills.** The worker preamble enforces: workers parse the `Skills:` line from the issue body if present; otherwise they route on the issue's **type label** (`bug` → `diagnosing-bugs`+`tdd`, `feature` → `implement`+`tdd`+`codebase-design`, `refactor`/`tech-debt` → `codebase-design`+`tdd`, `docs` → skip `tdd`), always adding `ponytail:ponytail` (simplest solution first, before any code; inline fallback when the plugin is absent), `verification-before-completion` and a `code-review` pass on their own diff. Test mechanics are picked by the localisation ladder, never by label. Decision points walk the decision ladder — acceptance criteria → repo precedent → smallest blast radius → human gate — and stop at the first rung that answers the question. No panel, no vote; `mattpocock-skills:grilling` is forbidden inside a worker (it waits on a user who is not there) and lives in `super-board lint` instead. `mattpocock-skills:code-review` runs once against the worker's own diff before the final commit. See `references/decision-policy.md` for the skill map, the ladder, the human gates, and the `--- decision ---` commit trailer.
@@ -202,14 +213,14 @@ The preamble at `references/worker-preamble.md` is the worker contract: decision
 ## Recovery / re-entry
 
 If the user invokes `/super-build` after a partial run:
-- Re-read `gh issue list`. Issues already closed are skipped automatically.
+- Re-read `forge ticket list`. Tickets already closed are skipped automatically.
 - If legacy `.worktrees/issue-N` exists, stop and inspect it before dispatch. Preserve edits and use `git worktree move` to the matching `.claude/worktrees/issue-N` path; never delete the old folder to make a fresh dispatch fit.
 - If `.claude/worktrees/issue-N` exists for an N that's still open: a previous worker was interrupted. Default: notify the user and ask before auto-resuming (a re-dispatch overwrites the previous attempt's branch).
 - If the `loop:in-progress` label is set on issue N but no worktree exists: stale lock from a crashed orchestrator. Remove the label and treat as ready.
 
 ## Stop conditions
 
-- Selected GitHub Project `Ready` queue is empty, or all remaining Ready cards are blocked / `human-gated` / `loop:halted`.
+- The selected board's `Ready` queue is empty, or all remaining Ready cards are blocked / `human-gated` / `loop:halted`.
 - Any worker fails (dispatcher exit 2 or 3).
 - HUMAN GATE TRIPPED (dispatcher exit 4).
 - Push or PR creation fails.
@@ -219,7 +230,7 @@ If the user invokes `/super-build` after a partial run:
 
 ## Invocation patterns
 
-- `Super Build` / `/super-build` → process all GitHub Project `Ready` issues in board order
+- `Super Build` / `/super-build` → process all `Ready` tickets in board order
 - `/super-build --only N` → execute only issue #N (smoke-test mode, ignores `loop:in-progress` label on that issue if you set `FORCE=1`)
 - `/super-build --dry-run` → print the dispatch plan (issues, order, parallelism waves) without invoking workers, without setting labels, without commenting
 
@@ -232,7 +243,7 @@ If the user invokes `/super-build` after a partial run:
 When invoked by super-board (env `SUPER_BOARD_RUN=1` set by the runner, or invocation contains "super-board run"), follow these rules instead of the standalone defaults:
 
 ### State protocol
-- Read context from: issue body + ALL issue comments + linked PR description + PR comments + PR review threads. NEVER from local state files for inter-lane coordination.
+- Read context from: ticket body + ALL ticket comments + linked PR description + PR comments + PR review threads. NEVER from local state files for inter-lane coordination.
 - Respect the worktree path super-board hands you (typically `.claude/worktrees/issue-<N>-build/`). Don't create your own.
 - Respect the single branch super-board hands you (`issue-<N>-<slug>`). Don't create alternate branches.
 
@@ -244,7 +255,7 @@ Follow spec `.claude/skills/super-board/references/run.md` → Builder (first pa
 4. Implement smallest safe change covering ACs — under the PR size cap (section below).
 5. Commit + push (always).
 6. Open **draft PR** with the PR description template from `run.md` — title in commit-subject format, every marker block filled, `Docs:` bullets in Solution, Door + Blast radius in Risk.
-7. Follow [PR author notes](../super-board/references/pr-author-notes.md), then post the `[builder] [report]` PR comment + the short issue comment with the PR URL (writing-standard.md § 4).
+7. Follow [PR author notes](../super-board/references/pr-author-notes.md), then post the `[builder] [report]` PR comment + the short ticket comment with the PR URL (writing-standard.md § 4).
 8. Move card Ready/Building → QA.
 
 ### Keep each PR small (every ticket)
@@ -262,14 +273,14 @@ split proposed in PR #<P>", `block-template.md`). Never pad past the cap to "fin
 
 ### Lifecycle (Builder, rebuild)
 Triggered when card returns to Ready/Building with `loop:rebuild-N` label.
-1. Read PR review threads on this branch's PR; filter `[builder]` prefix.
+1. Read PR review threads on this branch's PR (`forge pr threads <PR>`); filter `[builder]` prefix.
 2. For each unresolved `[builder]` thread: read file:line + suggested fix → apply → resolve thread via:
    ```bash
-   gh api graphql -f query='mutation($threadId:ID!){resolveReviewThread(input:{threadId:$threadId}){thread{isResolved}}}' -f threadId="<thread-id>"
+   python3 .claude/bin/super-board-forge.py --config <cfg> pr thread-resolve <PR> "<thread-id>"
    ```
 3. Address any new failure feedback from Tester's latest ❌ comment.
 4. Commit + push to same branch. Verify ALL `[builder]` threads are resolved before exit.
-5. Refresh [PR author notes](../super-board/references/pr-author-notes.md), rewrite your PR body blocks (`super-board-pr-body.sh`), post `[builder] [report]` PR + issue comments. Move card Ready/Building → QA.
+5. Refresh [PR author notes](../super-board/references/pr-author-notes.md), rewrite your PR body blocks (`super-board-pr-body.sh`), post `[builder] [report]` PR + ticket comments. Move card Ready/Building → QA.
 
 ### Docs before outside-tool code (every ticket)
 Before writing code, decide whether the ticket touches any of:

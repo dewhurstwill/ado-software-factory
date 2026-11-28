@@ -23,8 +23,9 @@
 # Same content twice is a no-op ("unchanged"), so a retried lane exit is safe.
 #
 # Exits: 0 ok (stdout: updated | unchanged | the body on --dry-run)
-#        6 PR head moved · 64 usage · 66 unreadable file · 70 gh failure
+#        6 PR head moved · 64 usage · 65 body too long for the provider (nothing written) · 66 unreadable file · 70 gh failure
 set -uo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/super-board-compat.sh"  # Windows: jq/python3 shims; no-op elsewhere
 
 BLOCKS="redcheck status problem solution ac history visual risk"
 die() { echo "pr-body: $1" >&2; exit "$2"; }
@@ -61,7 +62,9 @@ fi
 if [ "$MODE" = "time" ]; then
   TZV=""
   [ -n "$CONFIG" ] && [ -r "$CONFIG" ] && TZV=$(jq -r '.timezone // empty' "$CONFIG" 2>/dev/null)
-  if [ -n "$TZV" ]; then TZ="$TZV" date '+%b %e, %H:%M %Z' | sed 's/  */ /g'
+  # UTC by name: Git Bash has no zoneinfo and would print GMT (other zone names need tzdata there).
+  if [ "$TZV" = UTC ] || [ "$TZV" = Etc/UTC ]; then date -u '+%b %e, %H:%M UTC' | sed 's/  */ /g'
+  elif [ -n "$TZV" ]; then TZ="$TZV" date '+%b %e, %H:%M %Z' | sed 's/  */ /g'
   else date '+%b %e, %H:%M %Z' | sed 's/  */ /g'; fi
   exit 0
 fi
@@ -74,12 +77,12 @@ SRC="${BODY_FILE:-$APPEND_FILE}"
 [ -r "$SRC" ] || die "cannot read $SRC" 66
 [ "$DRY" -eq 1 ] || [ -n "$HEAD" ] || die "--expect-head <sha> is required (the PR head your edit is based on)" 64
 
-GITHUB_READ="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/super-board-github-read.py"
+FORGE=(python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/super-board-forge.py")
+[ -z "$CONFIG" ] || FORGE+=(--config "$CONFIG")
+[ -z "$REPO" ] || FORGE+=(--repo "$REPO")
 # REST, not `gh pr view`/`gh pr edit`: this script runs ~3 times per lane per
-# card, and the REST core bucket is separate from the GraphQL one the board
-# lives on. GH_REPO fills {owner}/{repo}; unset, gh uses the current checkout.
-export GH_REPO="${REPO:-${GH_REPO:-}}"; [ -n "$GH_REPO" ] || unset GH_REPO
-META=$(python3 "$GITHUB_READ" --kind body -- api "repos/{owner}/{repo}/pulls/$PR" --jq '{headRefOid: .head.sha, body: (.body // "")}' ) || exit $?
+# card, and the REST core bucket is separate from the GraphQL one the board lives on.
+META=$("${FORGE[@]}" pr body "$PR") || exit $?
 NOW=$(printf '%s' "$META" | jq -r '.headRefOid // empty')
 if [ -n "$HEAD" ]; then
   # Short or full sha both work: the PR head must start with what you passed.
@@ -159,6 +162,11 @@ PY
 if [ "$DRY" -eq 1 ]; then cat "$NEW_TMP"; exit 0; fi
 # $(…) drops trailing newlines, which GitHub does not keep either.
 if [ "$(cat "$OLD_TMP")" = "$(cat "$NEW_TMP")" ]; then echo unchanged; exit 0; fi
-python3 "$GITHUB_READ" --check || exit $?
-jq -n --rawfile b "$NEW_TMP" '{body: $b}' | gh api -X PATCH "repos/{owner}/{repo}/pulls/$PR" --input - >/dev/null 2>&1 || { python3 "$GITHUB_READ" --halt "PR body update outcome unknown for #$PR; read the body before retrying"; exit 79; }
+"${FORGE[@]}" check || exit $?
+SET_ERR=$("${FORGE[@]}" pr set-body "$PR" --body-file "$NEW_TMP" 2>&1 >/dev/null); SET_RC=$?
+if [ "$SET_RC" -eq 65 ]; then  # refused before any write (Azure DevOps: body over its 4,000-character cap): nothing to reconcile
+  echo "pr-body: $SET_ERR" >&2; exit 65
+elif [ "$SET_RC" -ne 0 ]; then
+  "${FORGE[@]}" halt "PR body update outcome unknown for #$PR; read the body before retrying"; exit 79
+fi
 echo updated

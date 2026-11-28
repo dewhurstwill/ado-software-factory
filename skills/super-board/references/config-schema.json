@@ -13,6 +13,39 @@
   // E.g. "staging QA" or "admin build pipeline".
   "description": "<short scannable label, e.g. 'staging QA' or 'admin build pipeline'>",
 
+  // Which forge backs tickets, PRs and merges: "github" (default when absent) or
+  // "azure-devops". Scripts reach it through .claude/bin/super-board-forge.py;
+  // the verb contract is in references/providers.md.
+  "provider": "github",
+
+  // Only when provider is "azure-devops" (project.owner/number above are GitHub-only
+  // and unused there). Tickets are work items, the board is one team's Kanban board,
+  // labels are work item tags, the claim is the tag `sb:claimed`. Mapping, auth order
+  // (AZURE_DEVOPS_EXT_PAT, <repo.path>/.env, az login) and gotchas: references/providers.md.
+  "ado": {
+    // Organization URL. $SB_ADO_BASE_URL overrides it for transport (tests only).
+    "organization": "https://dev.azure.com/<org>",
+    "project": "<project name>",
+    // Default "<project> Team".
+    "team": "<team name>",
+    // Backlog level name of the team's board. Default "Stories".
+    "board": "Stories",
+    // Repo the pull-request verbs use (a later slice). Default: the project name.
+    "repository": "<repo name>",
+    // Work item type created per ticket label; a ticket with no listed label gets the
+    // "feature" type. These are the defaults.
+    "work_item_types": { "feature": "User Story", "bug": "Bug", "qa": "User Story" },
+    // Field holding the ticket body, per work item type. Default System.Description, except
+    // Bug: Microsoft.VSTS.TCM.ReproSteps (shown below). An explicit value, even {}, replaces it.
+    "body_fields": { "Bug": "Microsoft.VSTS.TCM.ReproSteps" },
+    // Who may approve a held merge (gate exit 7/8) by commenting `done` after its pinned request:
+    // unique names (the sign-in email), compared case-insensitively with the comment author's.
+    // Absent or [] = nobody; a person merges held PRs in Azure DevOps. A list in this committed
+    // config keeps who may release a held merge reviewable and needs no Graph token scope. The
+    // token's own identity approves only when listed here (a solo owner). references/providers.md.
+    "approvers": ["user@example.com"]
+  },
+
   "project": {
     "owner": "<github-owner>",
     "title": "<project title on GitHub>",
@@ -118,9 +151,9 @@
   // "human" explicitly when every merge should require human approval.
   //
   // On the workflow backend, `false` ALSO requires
-  // "Bash(bash .claude/bin/super-board-merge-gate.sh:*)" and "Bash(gh pr merge:*)"
-  // in the session allowlist (onboard offers both as a diff) — without it every Reviewer stalls on an approval prompt
-  // and nothing lands. See references/run-workflow.md → "Mid-run permission prompts".
+  // "Bash(bash .claude/bin/super-board-merge-gate.sh:*)" in the session allowlist (onboard offers
+  // it as a diff). No provider merge command is listed: the gate runs the provider's merge in its
+  // own subprocess. Without that line every Reviewer stalls on an approval prompt and nothing lands. See references/run-workflow.md → "Mid-run permission prompts".
   "human_approves_merge": false,
 
   // Who merges what (v2.6.0). Evaluated by super-board-merge-gate.sh (via
@@ -158,7 +191,8 @@
     // or keyword (case-insensitive, searched in the diff's ADDED lines only) of
     // a category exits the gate 7: no merge, card → Blocked 🙋 (the human merges
     // it, or comments "done" to approve and the next wave merges).
-    // Setting this key replaces the whole default set; {} turns it off.
+    // Setting this key replaces the whole default set; {} turns it off. One category
+    // is not part of that set: "board-config" (below) always applies.
     // Globs: `**/` = any dirs (incl. none), `**` = anything, `*` = one segment.
     "always_human": {
       "money":  { "labels": ["money", "payments", "billing", "pricing"],
@@ -173,7 +207,17 @@
       // rule below. A live database is always human, whatever the change.
       "schema": { "labels": ["schema", "destructive"],
                   "paths": [],
-                  "keywords": ["drop table", "drop column", "truncate table", "rename column", "drop schema"] }
+                  "keywords": ["drop table", "drop column", "truncate table", "rename column", "drop schema"] },
+      // ALWAYS ON, on both providers, even when this key is customised or `{}`: any PR that
+      // touches the board's own config folder (`.claude/super-board/configs/**`, or the same
+      // path under `.agents/`) waits for a human (gate exit 7). Why: that file holds this very
+      // merge policy and, on Azure DevOps, `ado.approvers` (who may release a held merge), so an
+      // agent's PR must not be able to loosen the policy or change who approves. Shown here
+      // for reference: you do not need to list it. Only a `board-config` key of your own
+      // replaces its rule (do that only to widen what counts as board config).
+      "board-config": { "labels": [],
+                        "paths": ["**/.claude/super-board/configs/**", "**/.agents/super-board/configs/**"],
+                        "keywords": [] }
     },
     // true only when the user explicitly chose auto-merge onto a
     // production-detected base in onboard. run.md's production-merge guard
@@ -423,6 +467,10 @@
     "channel": "session",
     "chat_id": null,
 
+    // GITHUB ONLY. On `provider: "azure-devops"` this key is ignored: the claim is a holder tag
+    // (`sb:claimed-<holder>`) and `super-board status` shows the `whoami` login instead; onboard
+    // stages "auto" and `super-board-setup.py check` never flags it missing there.
+    //
     // The assignee identity used as the claim mutex. Read by
     // `super-board status` and `super-board run`. Recorded during onboard
     // step 11 as either `super-board-bot[bot]` (when a GitHub App is

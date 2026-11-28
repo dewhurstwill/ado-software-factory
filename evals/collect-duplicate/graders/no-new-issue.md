@@ -1,6 +1,6 @@
 ---
 type: regex
-pattern: 'issue create'
+pattern: 'issue create|-X POST repos/[^ ]+/issues --input'
 match: not_contains
 target:
   source: file

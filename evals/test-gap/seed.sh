@@ -17,6 +17,8 @@ done
 git init -q -b main .
 git config user.email eval@example.com
 git config user.name eval
+source "$(dirname "$(command -v gh)")/../pack-seed.sh"
+pack_seed blog
 mkdir -p src tests
 touch src/__init__.py tests/__init__.py
 cat > src/titles.py <<'PY'

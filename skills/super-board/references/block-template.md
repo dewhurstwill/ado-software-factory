@@ -2,6 +2,10 @@
 
 `Blocked` is an exit ramp, not a workflow step. There is no `Skipped` column (removed in v3.0.0).
 
+Issue here means the ticket (GitHub issue / Azure DevOps work item); comments, labels and moves go through
+`python3 .claude/bin/super-board-forge.py --config <cfg>` ([run.md](run.md) → Providers). Everything in this
+template is visible text, so it survives Azure DevOps work items, which strip `<!-- -->` comments.
+
 ## When / who moves cards there
 
 | Where | When | Who |
@@ -72,7 +76,7 @@ else parses.
 
 A card dropped on purpose uses the same template with the header `[<role>] [report] 🤷 dropped ·
 <reason>`, replaces `Why blocked` with `Why dropped` and `What blocks` with `Why out of scope`, is
-closed as not planned (`gh issue close <N> --reason "not planned"`) and moves to Done.
+closed as not planned (`python3 .claude/bin/super-board-forge.py --config <cfg> ticket close <N> --reason not-planned`) and moves to Done.
 
 ## Reason emoji vocabulary
 
@@ -80,7 +84,7 @@ closed as not planned (`gh issue close <N> --reason "not planned"`) and moves to
 |-------|-----------------------------|--------------------------------------------------------------------------|
 | 🔐    | Credentials / secrets       | missing API key, expired token, no test login                            |
 | 💳    | Billing / quota             | paid API rate-limit hit, free tier exhausted, requires plan upgrade      |
-| 🔑    | Permissions / access        | gh scope denied, org admin required, write access missing                |
+| 🔑    | Permissions / access        | token scope denied, org admin required, write access missing             |
 | ❓    | Ambiguity / spec gap        | two valid interpretations, AC contradicts PROJECT.md, dependency unclear |
 | 🛡    | Safety / destructive        | would drop a table, would push to prod, would rotate live secrets        |
 | 🧑    | Human review needed         | unresolved human PR comment, design decision, branding choice            |
@@ -122,7 +126,7 @@ blocked-by: -
 </details>
 ```
 
-Example (what the person sees on GitHub):
+Example (what the person sees on the ticket):
 
 > **🙋 Your turn on #812 — Add plan column**
 > - [ ] Run `npx prisma migrate deploy` on the **live** database
@@ -150,13 +154,13 @@ repost the same pending request on every poll or retry. Generic credential or
 product blocks without a PR remain manual; a bare `done` does not automate them.
 
 **Resume.** A human with current repository write, maintain or admin permission
-comments `done` after the newest request, in the same thread. This supports a solo
+(GitHub; Azure DevOps: `ado.approvers`, below) comments `done` after the newest request, in the same thread. This supports a solo
 owner approving their own PR. The planner verifies identity, permission, linked
 PR and current full head before putting the card in `resume`; the Reviewer then
 re-runs the merge gate. The gate also verifies the current policy and human steps,
 re-verifies against the base, re-runs allowed migrations, and rechecks approval
 just before merging. Changed code, a newer human block, edited evidence, missing
-permissions or unreadable GitHub evidence keep it on hold. A still-failing command
+permissions or unreadable evidence keep it on hold. A still-failing command
 also sends it back here. Old bare comments and `needs-you:done` labels never count;
 legacy blocked cards need one fresh pinned request and a fresh human reply. Move
 those legacy cards to Review once to generate it. If a PR changes while still
@@ -168,6 +172,12 @@ distinguish a person from an agent using that person's token; agents must never
 write the human's `done` response. The final approval check is a fresh snapshot;
 GitHub atomically protects the head at merge, but does not lock issue comments.
 A human can still merge a PR manually under the repository's normal rules.
+
+**Azure DevOps.** The request goes on the work item the PR links (its work item link, from
+`pr create --closes`), else in a PR thread; `done` must be in the same place. Every marker the
+check reads (`Reason tag: 🙋`, `approval-request:`) is visible text, so it survives work items,
+which strip `<!-- -->` comments. Who may answer is config `ado.approvers` (providers.md, "Human
+approval"), not repository permission; with no list a person merges the PR in Azure DevOps.
 
 ## Hard rule
 
